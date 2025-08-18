@@ -1,0 +1,76 @@
+descricao,categoria
+compra no mercado,alimentacao
+supermercado pague pouco,alimentacao
+restaurante bom prato,alimentacao
+almoco self-service,alimentacao
+jantar com amigos,alimentacao
+pedido no ifood,alimentacao
+lanche da tarde,alimentacao
+padaria pao quente,alimentacao
+hortifruti da esquina,alimentacao
+entrega rappi comida,alimentacao
+pagamento salario empresa,receitas
+recebimento de servico prestado,receitas
+venda de produto online,receitas
+consultoria projeto x,receitas
+freelance de design,receitas
+aluguel recebido,receitas
+bonus de performance,receitas
+pagamento 13o,receitas
+restituicao imposto de renda,receitas
+uber para o trabalho,transporte
+99 taxi para casa,transporte
+posto de gasolina shell,transporte
+combustivel carro,transporte
+estacionamento do shopping,transporte
+recarga bilhete unico,transporte
+passagem de onibus,transporte
+manutencao do veiculo,transporte
+troca de oleo,transporte
+seguro do carro,transporte
+pedagio na rodovia,transporte
+conta de luz,moradia
+conta de agua,moradia
+pagamento de aluguel,moradia
+condominio do edificio,moradia
+internet e tv a cabo,moradia
+iptu da casa,moradia
+gas de cozinha,moradia
+compra de movel para casa,moradia
+reforma na cozinha,moradia
+diarista da semana,moradia
+mensalidade da academia,pessoal_e_saude
+corte de cabelo,pessoal_e_saude
+compra de roupas,pessoal_e_saude
+presente de aniversario,pessoal_e_saude
+farmacia droga raia,pessoal_e_saude
+consulta medica,pessoal_e_saude
+plano de saude,pessoal_e_saude
+exames de laboratorio,pessoal_e_saude
+compra de perfume,pessoal_e_saude
+dentista,pessoal_e_saude
+fatura do cartao de credito,financeiro
+pagamento de emprestimo,financeiro
+tarifa de manutencao de conta,financeiro
+pagamento de boleto,financeiro
+taxa de servico,financeiro
+pagamento de impostos,financeiro
+transferencia pix enviada,financeiro
+compra de acoes,financeiro
+aporte em fundo de investimento,financeiro
+mensalidade da faculdade,lazer_e_educacao
+curso de ingles,lazer_e_educacao
+compra de livro,lazer_e_educacao
+assinatura netflix,lazer_e_educacao
+ingresso para cinema,lazer_e_educacao
+show de musica,lazer_e_educacao
+assinatura spotify,lazer_e_educacao
+compra de video game,lazer_e_educacao
+viagem de ferias,lazer_e_educacao
+assinatura de revista,lazer_e_educacao
+compra online na amazon,compras_online
+pedido no mercado livre,compras_online
+compra no aliexpress,compras_online
+loja de departamento online,compras_online
+assinatura de software,compras_online
+compra de eletronico,compras_online

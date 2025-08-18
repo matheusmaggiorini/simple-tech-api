@@ -31,3 +31,6 @@ pyarrow>=12.0.0
 # Supabase
 supabase>=1.0.0
 python-dotenv>=1.0.0 
+
+scikit-learn
+xgboost

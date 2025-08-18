@@ -4,6 +4,7 @@ import pandas as pd
 from datetime import datetime, timedelta
 from typing import Optional, Dict, List, Any
 
+
 # Este módulo foca na análise de inadimplência de clientes.
 # Requer que o DataFrame de entrada contenha colunas como:
 # - id_cliente (identificador único do cliente)
