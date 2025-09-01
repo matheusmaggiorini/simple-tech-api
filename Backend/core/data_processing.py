@@ -1,49 +1,41 @@
 import pandas as pd
 import numpy as np
 import re
+import json # Importa a biblioteca para ler o arquivo JSON
+import os   # Importa a biblioteca para lidar com caminhos de arquivo
 
 # ==============================================================================
-# ==== SISTEMA DE REGRAS PARA CATEGORIZAÇÃO ====
+# ==== CARREGAMENTO DINÂMICO DAS REGRAS DE CATEGORIZAÇÃO ====
 # ==============================================================================
-REGRAS_DE_CATEGORIZACAO = {
-    'receitas': [
-        'salario', 'salário', 'adiantamento', 'bonus', 'bônus', 'vencimento',
-        'recebimento', 'venda', 'consultoria', 'freelance', 'aluguel recebido',
-        'restituicao', '13o'
-    ],
-    'transporte': [
-        'uber', '99', 'taxi', 'gasolina', 'combustivel', 'estacionamento',
-        'bilhete unico', 'onibus', 'ônibus', 'carro', 'ipva', 'seguro do veiculo', 'pedagio'
-    ],
-    'moradia': [
-        'aluguel', 'condominio', 'condomínio', 'conta de luz', 'enel', 'iptu',
-        'conta de agua', 'internet', 'tv a cabo', 'gas', 'gás', 'diarista', 'reforma'
-    ],
-    'pessoal_e_saude': [
-        'farmacia', 'farmácia', 'remedio', 'remédio', 'medico', 'médico', 'consulta',
-        'plano de saude', 'exame', 'dentista', 'academia', 'corte de cabelo',
-        'roupas', 'perfume'
-    ],
-    'lazer_e_educacao': [
-        'restaurante', 'ifood', 'bar', 'cinema', 'show', 'viagem', 'livro',
-        'netflix', 'spotify', 'jogo', 'game', 'faculdade', 'curso', 'escola', 'palestra'
-    ],
-    'financeiro': [
-        'fatura', 'cartao de credito', 'cartão', 'emprestimo', 'empréstimo', 'tarifa',
-        'boleto', 'imposto', 'taxa', 'pix', 'transferencia', 'investimento', 'acoes'
-    ],
-    'compras_online': [
-        'amazon', 'mercado livre', 'aliexpress', 'shopee', 'loja online', 'software'
-    ],
-    'alimentacao': [
-        'mercado', 'supermercado', 'hortifruti', 'padaria', 'lanche', 'almoco', 'almoço',
-        'jantar', 'pizza', 'acai', 'açaí'
-    ]
-}
+
+def carregar_regras_de_categorizacao():
+    """
+    Lê o arquivo regras.json e o carrega em um dicionário Python.
+    Isso permite que as regras sejam editadas sem alterar o código.
+    """
+    # Constrói o caminho para o arquivo de regras, garantindo que funcione em qualquer sistema
+    caminho_arquivo = os.path.join(os.path.dirname(__file__), 'regras.json')
+    
+    try:
+        with open(caminho_arquivo, 'r', encoding='utf-8') as f:
+            print("Carregando regras de categorização do arquivo regras.json...")
+            regras = json.load(f)
+            return regras
+    except FileNotFoundError:
+        print(f"ERRO: Arquivo de regras '{caminho_arquivo}' não encontrado. A categorização usará um conjunto vazio de regras.")
+        return {}
+    except json.JSONDecodeError:
+        print(f"ERRO: O arquivo de regras '{caminho_arquivo}' não é um JSON válido.")
+        return {}
+
+# Carrega as regras uma vez quando o módulo é iniciado
+REGRAS_DE_CATEGORIZACAO = carregar_regras_de_categorizacao()
+
+# --- O restante do código permanece o mesmo, mas agora usa as regras carregadas ---
 
 def categorizar_por_regras(descricao):
     """
-    Categoriza a transação com base no dicionário de regras.
+    Categoriza a transação com base no dicionário de regras carregado do arquivo JSON.
     """
     desc_lower = str(descricao).lower()
 
@@ -69,9 +61,6 @@ def processar_dados(df: pd.DataFrame) -> pd.DataFrame:
     df.reset_index(drop=True, inplace=True)
 
     df['fluxo_diario'] = df['entrada'] - df['saida']
-    
-    # --- A CORREÇÃO ESTÁ AQUI ---
-    # Renomeando 'saldo_acumulado' para 'saldo'
     df['saldo'] = df['fluxo_diario'].cumsum()
     
     df['ano'] = df['data'].dt.year

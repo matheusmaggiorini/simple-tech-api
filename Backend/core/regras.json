@@ -1,0 +1,35 @@
+{
+    "receitas": [
+        "salario", "salário", "adiantamento", "bonus", "bônus", "vencimento",
+        "recebimento", "venda", "consultoria", "freelance", "aluguel recebido",
+        "restituicao", "13o"
+    ],
+    "transporte": [
+        "uber", "99", "taxi", "gasolina", "combustivel", "estacionamento",
+        "bilhete unico", "onibus", "ônibus", "carro", "ipva", "seguro do veiculo", "pedagio"
+    ],
+    "moradia": [
+        "aluguel", "condominio", "condomínio", "conta de luz", "enel", "iptu",
+        "conta de agua", "internet", "tv a cabo", "gas", "gás", "diarista", "reforma"
+    ],
+    "pessoal_e_saude": [
+        "farmacia", "farmácia", "remedio", "remédio", "medico", "médico", "consulta",
+        "plano de saude", "exame", "dentista", "academia", "corte de cabelo",
+        "roupas", "perfume"
+    ],
+    "lazer_e_educacao": [
+        "restaurante", "ifood", "bar", "cinema", "show", "viagem", "livro",
+        "netflix", "spotify", "jogo", "game", "faculdade", "curso", "escola", "palestra"
+    ],
+    "financeiro": [
+        "fatura", "cartao de credito", "cartão", "emprestimo", "empréstimo", "tarifa",
+        "boleto", "imposto", "taxa", "pix", "transferencia", "investimento", "acoes"
+    ],
+    "compras_online": [
+        "amazon", "mercado livre", "aliexpress", "shopee", "loja online", "software"
+    ],
+    "alimentacao": [
+        "mercado", "supermercado", "hortifruti", "padaria", "lanche", "almoco", "almoço",
+        "jantar", "pizza", "acai", "açaí"
+    ]
+}
