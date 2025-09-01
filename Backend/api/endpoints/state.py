@@ -18,4 +18,4 @@ UPLOAD_DIR = "data/api_uploads"
 global_prediction_model = None
 
 # Variável para armazenar os resultados da análise de importância das features
-global_feature_importance = None # <-- ADICIONE ESTA LINHA
+global_feature_importance = None 

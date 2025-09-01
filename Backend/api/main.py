@@ -12,6 +12,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 from api.endpoints.data import router as data_router
 from api.endpoints.predictions import router as predictions_router
 from api.endpoints.simulations import router as simulations_router
+from api.endpoints.metrics import router as metrics_router
 
 # Criar a aplicação FastAPI
 app = FastAPI(
@@ -33,6 +34,7 @@ app.add_middleware(
 app.include_router(data_router, prefix="/api/data", tags=["Data Management"])
 app.include_router(predictions_router, prefix="/api/predictions", tags=["Predictions & Alerts"])
 app.include_router(simulations_router, prefix="/api/simulations", tags=["Simulations"])
+app.include_router(metrics_router, prefix="/api/metrics", tags=["Financial Metrics"])
 
 
 # --- Endpoints Principais ---
