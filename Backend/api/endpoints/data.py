@@ -52,6 +52,15 @@ async def upload_excel_bundle(file: UploadFile = File(...)):
         # --- Processamento da Aba de Fluxo de Caixa ---
         print("Lendo a aba 'FluxoDeCaixa' do arquivo Excel...")
         df_raw_cashflow = pd.read_excel(file.file, sheet_name='FluxoDeCaixa')
+        # 1. Diagnóstico (pode manter para referência)
+        print("Colunas originais lidas do Excel:", df_raw_cashflow.columns.tolist())
+
+        # 2. Renomear a coluna problemática de 'Unnamed: 0' para 'data'
+        if 'Unnamed: 0' in df_raw_cashflow.columns:
+            df_raw_cashflow.rename(columns={'Unnamed: 0': 'data'}, inplace=True)
+            print("Coluna 'Unnamed: 0' foi renomeada para 'data'.")
+      
+        print("Colunas Finais:", df_raw_cashflow.columns.tolist())
         if df_raw_cashflow.empty:
             raise HTTPException(status_code=400, detail="A aba 'FluxoDeCaixa' está vazia.")
         

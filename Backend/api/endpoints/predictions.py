@@ -3,12 +3,12 @@ from pydantic import BaseModel
 import pandas as pd
 import os
 import sys
+import traceback
 
-# Adiciona o diretório raiz ao path
+# Adiciona o diretório raiz ao path para importações corretas
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
 
 from api.endpoints import state
-# Importa a classe do preditor para poder treiná-la
 from core.cashflow_predictor import CashflowPredictor
 
 router = APIRouter()
@@ -19,14 +19,13 @@ class PredictionRequest(BaseModel):
 @router.post("/cashflow")
 async def predict_cashflow(request: PredictionRequest):
     """
-    Treina o modelo de previsão de fluxo de caixa (se ainda não foi treinado)
-    e retorna a previsão para os próximos dias.
+    Treina o modelo (se necessário) e retorna a PREVISÃO REAL para os próximos dias.
     """
     if state.global_processed_df is None or state.global_processed_df.empty:
         raise HTTPException(status_code=400, detail="Nenhum dado foi carregado. Faça o upload de um arquivo primeiro.")
 
     try:
-        # Se o modelo ainda não foi treinado com os dados atuais, treine-o agora.
+        # Garante que o modelo está treinado com os dados atuais.
         if state.global_prediction_model is None:
             print("Nenhum modelo treinado encontrado. Iniciando treinamento...")
             predictor = CashflowPredictor()
@@ -34,19 +33,20 @@ async def predict_cashflow(request: PredictionRequest):
             state.global_prediction_model = predictor # Salva o predictor treinado
             print("Treinamento concluído e modelo salvo no estado.")
         
-        # A função de prever o futuro ainda está pendente, então retornamos uma mensagem
-        # predictor_instance = state.global_prediction_model
-        # future_df = predictor_instance.predict(request.future_days, state.global_processed_df)
+        # --- ESTA É A CORREÇÃO FINAL E DEFINITIVA ---
+        # Chama a função de previsão e obtém o DataFrame com os resultados.
+        predictor_instance = state.global_prediction_model
+        future_df = predictor_instance.predict(request.future_days, state.global_processed_df)
         
-        # Por enquanto, retornamos um sucesso com uma nota
-        return {"message": "Modelo treinado com sucesso. A funcionalidade de previsão futura está em desenvolvimento."}
+        # Converte o DataFrame para um formato de lista de dicionários (JSON Array),
+        # que é o que o frontend espera.
+        return future_df.to_dict(orient='records')
+        # --- FIM DA CORREÇÃO ---
 
     except Exception as e:
-        import traceback
         print(traceback.format_exc())
         raise HTTPException(status_code=500, detail=f"Erro ao gerar a previsão: {e}")
 
-# --- NOVO ENDPOINT DE INSIGHTS ---
 @router.get("/cashflow/feature_importance")
 async def get_feature_importance():
     """

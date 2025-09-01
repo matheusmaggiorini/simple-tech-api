@@ -62,6 +62,8 @@ def processar_dados(df: pd.DataFrame) -> pd.DataFrame:
     df['dia'] = df['data'].dt.day
     df['dia_da_semana'] = df['data'].dt.dayofweek
     df['semana_do_ano'] = df['data'].dt.isocalendar().week.astype(int)
+    # Ela converte valores vazios (NaN) ou numéricos para texto antes de categorizar.
+    df['descricao'] = df['descricao'].astype(str).fillna('')
     
     df['categoria'] = df['descricao'].apply(categorizar_por_regras)
 
