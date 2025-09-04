@@ -37,7 +37,7 @@ async def predict_cashflow(request: PredictionRequest):
         # Chama a função de previsão e obtém o DataFrame com os resultados.
         predictor_instance = state.global_prediction_model
         future_df = predictor_instance.predict(request.future_days, state.global_processed_df)
-        
+
         # Converte o DataFrame para um formato de lista de dicionários (JSON Array),
         # que é o que o frontend espera.
         return future_df.to_dict(orient='records')

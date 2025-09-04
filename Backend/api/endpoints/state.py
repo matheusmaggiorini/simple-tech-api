@@ -15,3 +15,4 @@ global_feature_importance: Optional[Any] = None  # Armazenar importância das fe
 
 # Diretório para uploads temporários
 UPLOAD_DIR = "data/api_uploads"
+
