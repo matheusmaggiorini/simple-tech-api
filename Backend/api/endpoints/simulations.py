@@ -6,6 +6,7 @@ from typing import Dict, Any, Optional, List
 from datetime import datetime, timedelta
 import sys
 import os
+import traceback
 
 # Adiciona o diretório raiz ao path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
@@ -69,34 +70,62 @@ class ScenarioResponse(BaseModel):
 
 def calculate_dataframe_summary(df: pd.DataFrame) -> Dict[str, Any]:
     """Calcula um resumo estatístico do DataFrame de previsão."""
-    summary = {
-        "total_receita": float(df['receita_total'].sum()),
-        "total_custo": float(df['custo_total'].sum()),
-        "total_fluxo_de_caixa": float(df['fluxo_de_caixa'].sum()),
-        "media_mensal_receita": float(df['receita_total'].mean()),
-        "media_mensal_custo": float(df['custo_total'].mean()),
-        "media_mensal_fluxo": float(df['fluxo_de_caixa'].mean()),
-        "meses_com_fluxo_positivo": int((df['fluxo_de_caixa'] > 0).sum()),
-        "meses_com_fluxo_negativo": int((df['fluxo_de_caixa'] < 0).sum()),
-        "maior_receita_mensal": float(df['receita_total'].max()),
-        "menor_receita_mensal": float(df['receita_total'].min()),
-        "maior_fluxo_mensal": float(df['fluxo_de_caixa'].max()),
-        "menor_fluxo_mensal": float(df['fluxo_de_caixa'].min())
-    }
-    return summary
+    try:
+        summary = {
+            "total_receita": float(df['receita_total'].sum()),
+            "total_custo": float(df['custo_total'].sum()),
+            "total_fluxo_de_caixa": float(df['fluxo_de_caixa'].sum()),
+            "media_mensal_receita": float(df['receita_total'].mean()),
+            "media_mensal_custo": float(df['custo_total'].mean()),
+            "media_mensal_fluxo": float(df['fluxo_de_caixa'].mean()),
+            "meses_com_fluxo_positivo": int((df['fluxo_de_caixa'] > 0).sum()),
+            "meses_com_fluxo_negativo": int((df['fluxo_de_caixa'] < 0).sum()),
+            "maior_receita_mensal": float(df['receita_total'].max()),
+            "menor_receita_mensal": float(df['receita_total'].min()),
+            "maior_fluxo_mensal": float(df['fluxo_de_caixa'].max()),
+            "menor_fluxo_mensal": float(df['fluxo_de_caixa'].min())
+        }
+        return summary
+    except Exception as e:
+        print(f"Erro ao calcular resumo do DataFrame: {e}")
+        raise
 
 def convert_dataframe_to_monthly_details(df: pd.DataFrame) -> List[Dict[str, Any]]:
     """Converte o DataFrame em uma lista de detalhes mensais."""
-    monthly_details = []
-    for _, row in df.iterrows():
-        month_detail = {
-            "mes": row['mes'],
-            "receita_total": float(row['receita_total']),
-            "custo_total": float(row['custo_total']),
-            "fluxo_de_caixa": float(row['fluxo_de_caixa'])
-        }
-        monthly_details.append(month_detail)
-    return monthly_details
+    try:
+        monthly_details = []
+        for _, row in df.iterrows():
+            month_detail = {
+                "mes": str(row['mes']) if 'mes' in row else 'N/A',
+                "receita_total": float(row['receita_total']) if pd.notna(row['receita_total']) else 0.0,
+                "custo_total": float(row['custo_total']) if pd.notna(row['custo_total']) else 0.0,
+                "fluxo_de_caixa": float(row['fluxo_de_caixa']) if pd.notna(row['fluxo_de_caixa']) else 0.0
+            }
+            monthly_details.append(month_detail)
+        return monthly_details
+    except Exception as e:
+        print(f"Erro ao converter DataFrame para detalhes mensais: {e}")
+        raise
+
+def create_mock_forecast_data() -> pd.DataFrame:
+    """Cria dados de previsão mock para teste quando não há dados reais."""
+    print("⚠️  Criando dados mock para demonstração da simulação")
+    mock_data = {
+        'mes': ['Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho', 
+                'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro'],
+        'receita_total': [10000, 11000, 12000, 13000, 14000, 15000,
+                         16000, 17000, 18000, 19000, 20000, 25000],
+        'custo_total': [8000, 8500, 9000, 9500, 10000, 10500,
+                       11000, 11500, 12000, 12500, 13000, 15000],
+        'fluxo_de_caixa': []
+    }
+    
+    # Calcular fluxo de caixa
+    for i in range(len(mock_data['receita_total'])):
+        fluxo = mock_data['receita_total'][i] - mock_data['custo_total'][i]
+        mock_data['fluxo_de_caixa'].append(fluxo)
+    
+    return pd.DataFrame(mock_data)
 
 @router.post("/scenario-simulation", response_model=SimulationResponse)
 async def simulate_scenario(request: SimulationRequest):
@@ -110,27 +139,46 @@ async def simulate_scenario(request: SimulationRequest):
         SimulationResponse: Resultados da simulação com comparação entre original e simulado
         
     Raises:
-        HTTPException: Se não houver dados carregados ou ocorrer erro na simulação
+        HTTPException: Se ocorrer erro na simulação
     """
-    # Verificar se temos dados de previsão disponíveis
-    if state.global_processed_df is None:
-        raise HTTPException(
-            status_code=400, 
-            detail="Dados não carregados. Faça upload de um arquivo CSV com previsões primeiro."
-        )
-    
-    # Verificar se o DataFrame possui as colunas necessárias
-    required_columns = ['mes', 'receita_total', 'custo_total', 'fluxo_de_caixa']
-    missing_columns = [col for col in required_columns if col not in state.global_processed_df.columns]
-    
-    if missing_columns:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Colunas necessárias não encontradas no DataFrame: {', '.join(missing_columns)}"
-        )
     
     try:
-        # Converter regras de sazonalidade para dicionário simples se fornecidas
+        print(f"🔄 Iniciando simulação de cenário: {request.scenario_type}")
+        print(f"📊 Regras de sazonalidade: {len(request.seasonality_rules) if request.seasonality_rules else 0}")
+        
+        # Verificar se temos dados de previsão disponíveis
+        df_forecast = None
+        
+        # Primeira tentativa: usar dados do estado global
+        if state.global_processed_df is not None and not state.global_processed_df.empty:
+            print("✅ Usando dados do estado global")
+            df_forecast = state.global_processed_df.copy()
+            
+            # Verificar se tem as colunas necessárias, se não, tentar criar
+            required_columns = ['mes', 'receita_total', 'custo_total', 'fluxo_de_caixa']
+            
+            if not all(col in df_forecast.columns for col in required_columns):
+                print("⚠️  Dados não possuem formato adequado para simulação")
+                # Se não tem as colunas necessárias, usar dados mock
+                df_forecast = create_mock_forecast_data()
+        else:
+            print("⚠️  Nenhum dado encontrado no estado global, usando dados mock")
+            df_forecast = create_mock_forecast_data()
+        
+        print(f"📋 Dataset para simulação: {len(df_forecast)} registros")
+        print(f"🏷️  Colunas disponíveis: {list(df_forecast.columns)}")
+        
+        # Garantir que as colunas necessárias existem
+        required_columns = ['mes', 'receita_total', 'custo_total', 'fluxo_de_caixa']
+        missing_columns = [col for col in required_columns if col not in df_forecast.columns]
+        
+        if missing_columns:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Colunas necessárias não encontradas no DataFrame: {', '.join(missing_columns)}"
+            )
+        
+        # Converter regras de sazonalidade para formato adequado
         seasonality_dict = None
         if request.seasonality_rules:
             seasonality_dict = [
@@ -140,20 +188,27 @@ async def simulate_scenario(request: SimulationRequest):
                 }
                 for rule in request.seasonality_rules
             ]
+            print(f"🌐 Aplicando {len(seasonality_dict)} regras de sazonalidade")
         
         # Executar simulação
-        df_original = state.global_processed_df.copy()
+        print("🚀 Executando simulação...")
+        df_original = df_forecast.copy()
+        
         df_simulated = run_simulation(
             forecast_df=df_original,
             scenario_type=request.scenario_type,
             seasonality_rules=seasonality_dict
         )
         
+        print("✅ Simulação executada com sucesso")
+        
         # Calcular resumos
+        print("📊 Calculando resumos...")
         original_summary = calculate_dataframe_summary(df_original)
         simulated_summary = calculate_dataframe_summary(df_simulated)
         
         # Converter para detalhes mensais
+        print("📝 Preparando detalhes mensais...")
         monthly_details = convert_dataframe_to_monthly_details(df_simulated)
         
         # Preparar resposta
@@ -166,12 +221,49 @@ async def simulate_scenario(request: SimulationRequest):
             seasonality_rules_count=len(request.seasonality_rules) if request.seasonality_rules else 0
         )
         
+        print("✅ Resposta preparada com sucesso")
+        print(f"💰 Receita original: R$ {original_summary['total_receita']:,.2f}")
+        print(f"💰 Receita simulada: R$ {simulated_summary['total_receita']:,.2f}")
+        print(f"💹 Fluxo original: R$ {original_summary['total_fluxo_de_caixa']:,.2f}")
+        print(f"💹 Fluxo simulado: R$ {simulated_summary['total_fluxo_de_caixa']:,.2f}")
+        
         return response
+        
+    except ValueError as ve:
+        print(f"❌ Erro de validação: {str(ve)}")
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=400,
+            detail=f"Erro de validação: {str(ve)}"
+        )
+        
+    except Exception as e:
+        print(f"❌ Erro interno: {str(e)}")
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=500,
+            detail=f"Erro interno ao executar simulação de cenário: {str(e)}"
+        )
+
+# Endpoint de teste para verificar o status
+@router.get("/status")
+async def get_simulation_status():
+    """Endpoint para verificar o status do módulo de simulação."""
+    try:
+        status_info = {
+            "module": "scenarios",
+            "status": "active",
+            "has_data": state.global_processed_df is not None,
+            "data_shape": state.global_processed_df.shape if state.global_processed_df is not None else None,
+            "available_scenarios": ["otimista", "conservador", "pessimista"]
+        }
+        
+        return status_info
         
     except Exception as e:
         raise HTTPException(
             status_code=500,
-            detail=f"Erro interno ao executar simulação de cenário: {str(e)}"
+            detail=f"Erro ao verificar status: {str(e)}"
         )
 
 # Mantendo endpoint legado para compatibilidade

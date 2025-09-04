@@ -1,11 +1,10 @@
-# core/scenario_simulator.py
+# Backend/core/scenario_simulator.py - Versão Corrigida
 
 import pandas as pd
 import numpy as np
 from typing import Dict, List, Optional, Tuple, Any
-import matplotlib.pyplot as plt
-from datetime import datetime, timedelta
 import logging
+from datetime import datetime, timedelta
 
 # Configurar logging
 logging.basicConfig(level=logging.INFO)
@@ -43,15 +42,32 @@ def validate_forecast_dataframe(df: pd.DataFrame) -> bool:
     Raises:
         ValueError: Se o DataFrame não possuir as colunas necessárias
     """
+    if df is None:
+        raise ValueError("DataFrame não pode ser None")
+        
+    if df.empty:
+        raise ValueError("DataFrame não pode estar vazio")
+    
     required_columns = ['mes', 'receita_total', 'custo_total', 'fluxo_de_caixa']
     missing_columns = [col for col in required_columns if col not in df.columns]
     
     if missing_columns:
+        # Log das colunas disponíveis para debug
+        logger.warning(f"Colunas disponíveis no DataFrame: {list(df.columns)}")
+        logger.warning(f"Colunas faltantes: {missing_columns}")
         raise ValueError(f"DataFrame deve conter as colunas: {', '.join(missing_columns)}")
     
-    if df.empty:
-        raise ValueError("DataFrame não pode estar vazio")
+    # Verificar se há dados válidos
+    if len(df) == 0:
+        raise ValueError("DataFrame não contém nenhum registro")
     
+    # Verificar se as colunas numéricas contêm valores válidos
+    numeric_columns = ['receita_total', 'custo_total', 'fluxo_de_caixa']
+    for col in numeric_columns:
+        if df[col].isna().all():
+            raise ValueError(f"Coluna {col} contém apenas valores NaN")
+    
+    logger.info(f"DataFrame validado com sucesso: {len(df)} registros, colunas: {list(df.columns)}")
     return True
 
 def apply_macroeconomic_scenario(df: pd.DataFrame, scenario_type: str) -> pd.DataFrame:
@@ -79,11 +95,23 @@ def apply_macroeconomic_scenario(df: pd.DataFrame, scenario_type: str) -> pd.Dat
     revenue_multiplier = 1 + scenario_config["revenue_change"]
     cost_multiplier = 1 + scenario_config["cost_change"]
     
-    logger.info(f"Aplicando cenário {scenario_type}: receita {revenue_multiplier:.2%}, custo {cost_multiplier:.2%}")
+    logger.info(f"Aplicando cenário {scenario_type}:")
+    logger.info(f"  Receita: {scenario_config['revenue_change']:+.1%} (multiplicador: {revenue_multiplier:.3f})")
+    logger.info(f"  Custo: {scenario_config['cost_change']:+.1%} (multiplicador: {cost_multiplier:.3f})")
     
-    # Ajustar receita e custo
+    # Garantir que os valores sejam numéricos
+    df_adjusted['receita_total'] = pd.to_numeric(df_adjusted['receita_total'], errors='coerce').fillna(0)
+    df_adjusted['custo_total'] = pd.to_numeric(df_adjusted['custo_total'], errors='coerce').fillna(0)
+    
+    # Aplicar ajustes
     df_adjusted['receita_total'] = df_adjusted['receita_total'] * revenue_multiplier
     df_adjusted['custo_total'] = df_adjusted['custo_total'] * cost_multiplier
+    
+    # Log dos valores antes e depois para debug
+    logger.info(f"Receita total antes: R$ {df['receita_total'].sum():,.2f}")
+    logger.info(f"Receita total depois: R$ {df_adjusted['receita_total'].sum():,.2f}")
+    logger.info(f"Custo total antes: R$ {df['custo_total'].sum():,.2f}")
+    logger.info(f"Custo total depois: R$ {df_adjusted['custo_total'].sum():,.2f}")
     
     return df_adjusted
 
@@ -99,32 +127,59 @@ def apply_seasonality_adjustments(df: pd.DataFrame, seasonality_rules: List[Dict
     Returns:
         pd.DataFrame: DataFrame com ajustes de sazonalidade aplicados
     """
+    if not seasonality_rules:
+        return df
+        
     df_seasonal = df.copy()
     
     logger.info(f"Aplicando {len(seasonality_rules)} regras de sazonalidade")
     
-    for rule in seasonality_rules:
-        month = rule.get("month")
-        revenue_change = rule.get("revenue_change_percentage", 0)
-        
-        if not month or revenue_change is None:
-            logger.warning(f"Regra de sazonalidade inválida: {rule}")
+    for i, rule in enumerate(seasonality_rules):
+        try:
+            month = rule.get("month", "").strip()
+            revenue_change = rule.get("revenue_change_percentage", 0)
+            
+            if not month:
+                logger.warning(f"Regra {i+1}: mês não especificado, ignorando")
+                continue
+                
+            if revenue_change == 0:
+                logger.info(f"Regra {i+1}: sem mudança para {month}, ignorando")
+                continue
+            
+            # Procurar registros do mês (busca flexível)
+            month_mask = df_seasonal['mes'].str.contains(month, case=False, na=False)
+            matching_rows = df_seasonal[month_mask]
+            
+            if matching_rows.empty:
+                # Tentar busca mais flexível
+                month_partial_mask = df_seasonal['mes'].str.lower().str.contains(month.lower()[:3], na=False)
+                matching_rows = df_seasonal[month_partial_mask]
+                
+                if matching_rows.empty:
+                    logger.warning(f"Regra {i+1}: nenhum registro encontrado para '{month}' no dataset")
+                    logger.info(f"Meses disponíveis: {list(df_seasonal['mes'].unique())}")
+                    continue
+                else:
+                    month_mask = month_partial_mask
+            
+            # Aplicar mudança percentual na receita
+            multiplier = 1 + (revenue_change / 100)
+            receita_antes = df_seasonal.loc[month_mask, 'receita_total'].sum()
+            
+            df_seasonal.loc[month_mask, 'receita_total'] *= multiplier
+            
+            receita_depois = df_seasonal.loc[month_mask, 'receita_total'].sum()
+            
+            logger.info(f"Regra {i+1} aplicada ao mês '{month}':")
+            logger.info(f"  Ajuste: {revenue_change:+.1f}%")
+            logger.info(f"  Registros afetados: {len(matching_rows)}")
+            logger.info(f"  Receita antes: R$ {receita_antes:,.2f}")
+            logger.info(f"  Receita depois: R$ {receita_depois:,.2f}")
+            
+        except Exception as e:
+            logger.error(f"Erro ao aplicar regra de sazonalidade {i+1}: {e}")
             continue
-        
-        # Encontrar linhas correspondentes ao mês
-        month_mask = df_seasonal['mes'].str.contains(month, case=False, na=False)
-        matching_rows = df_seasonal[month_mask]
-        
-        if matching_rows.empty:
-            logger.warning(f"Nenhum registro encontrado para o mês: {month}")
-            continue
-        
-        # Aplicar mudança percentual apenas na receita
-        multiplier = 1 + (revenue_change / 100)
-        df_seasonal.loc[month_mask, 'receita_total'] *= multiplier
-        
-        logger.info(f"Ajuste sazonal aplicado ao mês {month}: {revenue_change:+.1f}% na receita")
-        logger.info(f"Registros afetados: {len(matching_rows)}")
     
     return df_seasonal
 
@@ -139,9 +194,23 @@ def recalculate_cash_flow(df: pd.DataFrame) -> pd.DataFrame:
         pd.DataFrame: DataFrame com fluxo de caixa recalculado
     """
     df_recalculated = df.copy()
+    
+    # Garantir que os valores são numéricos
+    df_recalculated['receita_total'] = pd.to_numeric(df_recalculated['receita_total'], errors='coerce').fillna(0)
+    df_recalculated['custo_total'] = pd.to_numeric(df_recalculated['custo_total'], errors='coerce').fillna(0)
+    
+    # Recalcular fluxo de caixa
     df_recalculated['fluxo_de_caixa'] = df_recalculated['receita_total'] - df_recalculated['custo_total']
     
-    logger.info("Fluxo de caixa recalculado após ajustes")
+    # Log do resultado
+    fluxo_total = df_recalculated['fluxo_de_caixa'].sum()
+    meses_positivos = (df_recalculated['fluxo_de_caixa'] > 0).sum()
+    meses_negativos = (df_recalculated['fluxo_de_caixa'] < 0).sum()
+    
+    logger.info("Fluxo de caixa recalculado:")
+    logger.info(f"  Total: R$ {fluxo_total:,.2f}")
+    logger.info(f"  Meses positivos: {meses_positivos}")
+    logger.info(f"  Meses negativos: {meses_negativos}")
     
     return df_recalculated
 
@@ -168,41 +237,62 @@ def run_simulation(
         
     Raises:
         ValueError: Se os parâmetros forem inválidos
-        
-    Example:
-        >>> df = pd.DataFrame({
-        ...     'mes': ['Janeiro', 'Fevereiro', 'Março'],
-        ...     'receita_total': [1000, 1100, 1200],
-        ...     'custo_total': [800, 850, 900],
-        ...     'fluxo_de_caixa': [200, 250, 300]
-        ... })
-        >>> seasonality = [{"month": "Fevereiro", "revenue_change_percentage": -15}]
-        >>> result = run_simulation(df, 'otimista', seasonality)
     """
-    logger.info("Iniciando simulação de cenários")
+    logger.info("="*60)
+    logger.info("INICIANDO SIMULAÇÃO DE CENÁRIOS")
+    logger.info("="*60)
     logger.info(f"Cenário: {scenario_type}")
     logger.info(f"Regras de sazonalidade: {len(seasonality_rules) if seasonality_rules else 0}")
     
-    # 1. Validar DataFrame de entrada
-    validate_forecast_dataframe(forecast_df)
-    
-    # 2. Criar cópia do DataFrame original
-    df_simulation = forecast_df.copy()
-    logger.info(f"DataFrame original: {len(df_simulation)} registros")
-    
-    # 3. Aplicar ajustes de cenário macroeconômico
-    df_simulation = apply_macroeconomic_scenario(df_simulation, scenario_type)
-    
-    # 4. Aplicar ajustes de sazonalidade (se fornecidos)
-    if seasonality_rules and len(seasonality_rules) > 0:
-        df_simulation = apply_seasonality_adjustments(df_simulation, seasonality_rules)
-    
-    # 5. Recalcular fluxo de caixa
-    df_simulation = recalculate_cash_flow(df_simulation)
-    
-    logger.info("Simulação de cenários concluída com sucesso")
-    
-    return df_simulation
+    try:
+        # 1. Validar DataFrame de entrada
+        validate_forecast_dataframe(forecast_df)
+        
+        # 2. Criar cópia do DataFrame original
+        df_simulation = forecast_df.copy()
+        logger.info(f"DataFrame de entrada: {len(df_simulation)} registros")
+        
+        # Log das estatísticas iniciais
+        logger.info("ESTATÍSTICAS INICIAIS:")
+        logger.info(f"  Receita total: R$ {df_simulation['receita_total'].sum():,.2f}")
+        logger.info(f"  Custo total: R$ {df_simulation['custo_total'].sum():,.2f}")
+        logger.info(f"  Fluxo total: R$ {df_simulation['fluxo_de_caixa'].sum():,.2f}")
+        
+        # 3. Aplicar ajustes de cenário macroeconômico
+        logger.info("\n" + "="*40)
+        logger.info("APLICANDO CENÁRIO MACROECONÔMICO")
+        logger.info("="*40)
+        df_simulation = apply_macroeconomic_scenario(df_simulation, scenario_type)
+        
+        # 4. Aplicar ajustes de sazonalidade (se fornecidos)
+        if seasonality_rules and len(seasonality_rules) > 0:
+            logger.info("\n" + "="*40)
+            logger.info("APLICANDO AJUSTES DE SAZONALIDADE")
+            logger.info("="*40)
+            df_simulation = apply_seasonality_adjustments(df_simulation, seasonality_rules)
+        
+        # 5. Recalcular fluxo de caixa
+        logger.info("\n" + "="*40)
+        logger.info("RECALCULANDO FLUXO DE CAIXA")
+        logger.info("="*40)
+        df_simulation = recalculate_cash_flow(df_simulation)
+        
+        # Log das estatísticas finais
+        logger.info("\nESTATÍSTICAS FINAIS:")
+        logger.info(f"  Receita total: R$ {df_simulation['receita_total'].sum():,.2f}")
+        logger.info(f"  Custo total: R$ {df_simulation['custo_total'].sum():,.2f}")
+        logger.info(f"  Fluxo total: R$ {df_simulation['fluxo_de_caixa'].sum():,.2f}")
+        
+        logger.info("="*60)
+        logger.info("SIMULAÇÃO CONCLUÍDA COM SUCESSO")
+        logger.info("="*60)
+        
+        return df_simulation
+        
+    except Exception as e:
+        logger.error(f"ERRO NA SIMULAÇÃO: {e}")
+        logger.error("="*60)
+        raise
 
 def generate_scenario_summary(
     original_df: pd.DataFrame, 
@@ -220,391 +310,172 @@ def generate_scenario_summary(
     Returns:
         Dict[str, Any]: Resumo com comparações e métricas
     """
-    original_totals = {
-        "receita": original_df['receita_total'].sum(),
-        "custo": original_df['custo_total'].sum(),
-        "fluxo": original_df['fluxo_de_caixa'].sum()
-    }
-    
-    simulated_totals = {
-        "receita": simulated_df['receita_total'].sum(),
-        "custo": simulated_df['custo_total'].sum(),
-        "fluxo": simulated_df['fluxo_de_caixa'].sum()
-    }
-    
-    changes = {
-        "receita_change": ((simulated_totals["receita"] - original_totals["receita"]) / original_totals["receita"]) * 100,
-        "custo_change": ((simulated_totals["custo"] - original_totals["custo"]) / original_totals["custo"]) * 100,
-        "fluxo_change": ((simulated_totals["fluxo"] - original_totals["fluxo"]) / original_totals["fluxo"]) * 100 if original_totals["fluxo"] != 0 else 0
-    }
-    
-    summary = {
-        "scenario_type": scenario_type,
-        "scenario_description": MACROECONOMIC_SCENARIOS[scenario_type]["description"],
-        "original_totals": original_totals,
-        "simulated_totals": simulated_totals,
-        "percentage_changes": changes,
-        "months_analyzed": len(original_df),
-        "positive_cash_flow_months_original": int((original_df['fluxo_de_caixa'] > 0).sum()),
-        "positive_cash_flow_months_simulated": int((simulated_df['fluxo_de_caixa'] > 0).sum())
-    }
-    
-    return summary
-
-# Simulação de Monte Carlo para fluxo de caixa (funcionalidade existente mantida)
-def calcular_estatisticas_historicas(df_historico: pd.DataFrame) -> Dict[str, Any]:
-    """Calcula estatísticas básicas do histórico de fluxo de caixa para uso na simulação."""
-    if df_historico.empty or "data" not in df_historico.columns:
-        raise ValueError("DataFrame histórico vazio ou sem coluna 'data'.")
-    
-    estatisticas = {}
-    
-    # Verificar se temos colunas de entrada e saída ou fluxo diário
-    if "entrada" in df_historico.columns and "saida" in df_historico.columns:
-        # Calcular estatísticas de entrada
-        estatisticas["media_entrada"] = df_historico["entrada"].mean()
-        estatisticas["desvio_padrao_entrada"] = df_historico["entrada"].std()
-        estatisticas["min_entrada"] = df_historico["entrada"].min()
-        estatisticas["max_entrada"] = df_historico["entrada"].max()
+    try:
+        original_totals = {
+            "receita": float(original_df['receita_total'].sum()),
+            "custo": float(original_df['custo_total'].sum()),
+            "fluxo": float(original_df['fluxo_de_caixa'].sum())
+        }
         
-        # Calcular estatísticas de saída
-        estatisticas["media_saida"] = df_historico["saida"].mean()
-        estatisticas["desvio_padrao_saida"] = df_historico["saida"].std()
-        estatisticas["min_saida"] = df_historico["saida"].min()
-        estatisticas["max_saida"] = df_historico["saida"].max()
-    
-    # Calcular estatísticas de fluxo diário (entrada - saída)
-    if "fluxo_diario" in df_historico.columns:
-        estatisticas["media_fluxo"] = df_historico["fluxo_diario"].mean()
-        estatisticas["desvio_padrao_fluxo"] = df_historico["fluxo_diario"].std()
-    elif "entrada" in df_historico.columns and "saida" in df_historico.columns:
-        df_historico["fluxo_diario"] = df_historico["entrada"] - df_historico["saida"]
-        estatisticas["media_fluxo"] = df_historico["fluxo_diario"].mean()
-        estatisticas["desvio_padrao_fluxo"] = df_historico["fluxo_diario"].std()
-    
-    # Calcular estatísticas de saldo, se disponível
-    if "saldo" in df_historico.columns:
-        estatisticas["ultimo_saldo"] = df_historico["saldo"].iloc[-1]
-        estatisticas["media_saldo"] = df_historico["saldo"].mean()
-        estatisticas["desvio_padrao_saldo"] = df_historico["saldo"].std()
-    
-    # Calcular estatísticas temporais
-    df_historico_sorted = df_historico.sort_values(by="data")
-    estatisticas["primeira_data"] = df_historico_sorted["data"].iloc[0]
-    estatisticas["ultima_data"] = df_historico_sorted["data"].iloc[-1]
-    estatisticas["dias_historico"] = (estatisticas["ultima_data"] - estatisticas["primeira_data"]).days + 1
-    
-    return estatisticas
-
-def gerar_parametros_simulacao(
-    estatisticas: Dict[str, Any],
-    variacao_entrada: float = 0.1,  # Variação percentual na média de entradas
-    variacao_saida: float = 0.1,    # Variação percentual na média de saídas
-    dias_simulacao: int = 30,       # Número de dias a simular
-    num_simulacoes: int = 1000,     # Número de simulações de Monte Carlo
-    saldo_inicial: Optional[float] = None,  # Saldo inicial para a simulação
-    seed: Optional[int] = None      # Seed para reprodutibilidade
-) -> Dict[str, Any]:
-    """Gera parâmetros para a simulação de Monte Carlo com base nas estatísticas históricas."""
-    if seed is not None:
-        np.random.seed(seed)
-    
-    parametros = {
-        "dias_simulacao": dias_simulacao,
-        "num_simulacoes": num_simulacoes,
-        "variacao_entrada": variacao_entrada,
-        "variacao_saida": variacao_saida,
-        "data_inicio_simulacao": estatisticas.get("ultima_data", datetime.now()) + timedelta(days=1)
-    }
-    
-    # Definir saldo inicial
-    if saldo_inicial is not None:
-        parametros["saldo_inicial"] = saldo_inicial
-    elif "ultimo_saldo" in estatisticas:
-        parametros["saldo_inicial"] = estatisticas["ultimo_saldo"]
-    else:
-        parametros["saldo_inicial"] = 0.0
-    
-    # Definir parâmetros de distribuição para entradas
-    if "media_entrada" in estatisticas:
-        # Aplicar variação à média de entradas
-        parametros["media_entrada_base"] = estatisticas["media_entrada"]
-        parametros["media_entrada_min"] = estatisticas["media_entrada"] * (1 - variacao_entrada)
-        parametros["media_entrada_max"] = estatisticas["media_entrada"] * (1 + variacao_entrada)
+        simulated_totals = {
+            "receita": float(simulated_df['receita_total'].sum()),
+            "custo": float(simulated_df['custo_total'].sum()),
+            "fluxo": float(simulated_df['fluxo_de_caixa'].sum())
+        }
         
-        # Usar desvio padrão histórico ou um valor mínimo
-        parametros["desvio_padrao_entrada"] = max(
-            estatisticas.get("desvio_padrao_entrada", 0),
-            estatisticas["media_entrada"] * 0.05  # Mínimo de 5% da média como desvio padrão
-        )
-    
-    # Definir parâmetros de distribuição para saídas
-    if "media_saida" in estatisticas:
-        # Aplicar variação à média de saídas
-        parametros["media_saida_base"] = estatisticas["media_saida"]
-        parametros["media_saida_min"] = estatisticas["media_saida"] * (1 - variacao_saida)
-        parametros["media_saida_max"] = estatisticas["media_saida"] * (1 + variacao_saida)
+        # Calcular mudanças percentuais
+        def safe_percentage_change(new_val, old_val):
+            if old_val == 0:
+                return 0 if new_val == 0 else 100
+            return ((new_val - old_val) / abs(old_val)) * 100
         
-        # Usar desvio padrão histórico ou um valor mínimo
-        parametros["desvio_padrao_saida"] = max(
-            estatisticas.get("desvio_padrao_saida", 0),
-            estatisticas["media_saida"] * 0.05  # Mínimo de 5% da média como desvio padrão
-        )
-    
-    # Alternativa: usar estatísticas de fluxo diário se não temos entrada/saída separadas
-    if "media_fluxo" in estatisticas and ("media_entrada_base" not in parametros):
-        parametros["media_fluxo_base"] = estatisticas["media_fluxo"]
-        parametros["media_fluxo_min"] = estatisticas["media_fluxo"] * (1 - variacao_entrada)  # Usando variação_entrada como proxy
-        parametros["media_fluxo_max"] = estatisticas["media_fluxo"] * (1 + variacao_entrada)
+        changes = {
+            "receita_change": safe_percentage_change(simulated_totals["receita"], original_totals["receita"]),
+            "custo_change": safe_percentage_change(simulated_totals["custo"], original_totals["custo"]),
+            "fluxo_change": safe_percentage_change(simulated_totals["fluxo"], original_totals["fluxo"])
+        }
         
-        parametros["desvio_padrao_fluxo"] = max(
-            estatisticas.get("desvio_padrao_fluxo", 0),
-            abs(estatisticas["media_fluxo"]) * 0.05  # Mínimo de 5% da média como desvio padrão
-        )
-    
-    return parametros
-
-def executar_simulacao_monte_carlo(parametros: Dict[str, Any]) -> Tuple[pd.DataFrame, pd.DataFrame]:
-    """Executa a simulação de Monte Carlo para fluxo de caixa com base nos parâmetros fornecidos."""
-    dias_simulacao = parametros["dias_simulacao"]
-    num_simulacoes = parametros["num_simulacoes"]
-    saldo_inicial = parametros["saldo_inicial"]
-    data_inicio = parametros["data_inicio_simulacao"]
-    
-    # Criar datas para a simulação
-    datas_simulacao = [data_inicio + timedelta(days=i) for i in range(dias_simulacao)]
-    
-    # Matriz para armazenar resultados de todas as simulações
-    # Formato: [num_simulacoes, dias_simulacao]
-    matriz_saldos = np.zeros((num_simulacoes, dias_simulacao))
-    
-    # Executar simulações
-    for sim in range(num_simulacoes):
-        saldo_atual = saldo_inicial
+        summary = {
+            "scenario_type": scenario_type,
+            "scenario_description": MACROECONOMIC_SCENARIOS.get(scenario_type, {}).get("description", ""),
+            "original_totals": original_totals,
+            "simulated_totals": simulated_totals,
+            "percentage_changes": changes,
+            "months_analyzed": len(original_df),
+            "positive_cash_flow_months_original": int((original_df['fluxo_de_caixa'] > 0).sum()),
+            "positive_cash_flow_months_simulated": int((simulated_df['fluxo_de_caixa'] > 0).sum())
+        }
         
-        for dia in range(dias_simulacao):
-            # Gerar fluxo de caixa para o dia atual
-            if "media_entrada_base" in parametros and "media_saida_base" in parametros:
-                # Simular entrada e saída separadamente
-                # Variação aleatória nas médias para esta simulação específica
-                media_entrada_sim = np.random.uniform(
-                    parametros["media_entrada_min"],
-                    parametros["media_entrada_max"]
-                )
-                media_saida_sim = np.random.uniform(
-                    parametros["media_saida_min"],
-                    parametros["media_saida_max"]
-                )
-                
-                # Gerar valores diários com distribuição normal
-                entrada_dia = max(0, np.random.normal(
-                    media_entrada_sim,
-                    parametros["desvio_padrao_entrada"]
-                ))
-                saida_dia = max(0, np.random.normal(
-                    media_saida_sim,
-                    parametros["desvio_padrao_saida"]
-                ))
-                
-                fluxo_dia = entrada_dia - saida_dia
-            
-            elif "media_fluxo_base" in parametros:
-                # Simular fluxo diário diretamente
-                # Variação aleatória na média para esta simulação específica
-                media_fluxo_sim = np.random.uniform(
-                    parametros["media_fluxo_min"],
-                    parametros["media_fluxo_max"]
-                )
-                
-                # Gerar valor de fluxo diário com distribuição normal
-                fluxo_dia = np.random.normal(
-                    media_fluxo_sim,
-                    parametros["desvio_padrao_fluxo"]
-                )
-            
-            else:
-                raise ValueError("Parâmetros insuficientes para simulação. Necessário média de entrada/saída ou fluxo.")
-            
-            # Atualizar saldo
-            saldo_atual += fluxo_dia
-            matriz_saldos[sim, dia] = saldo_atual
-    
-    # Criar DataFrame com resultados agregados
-    percentis = [5, 10, 25, 50, 75, 90, 95]
-    df_resultados = pd.DataFrame(index=datas_simulacao)
-    
-    for percentil in percentis:
-        df_resultados[f'percentil_{percentil}'] = np.percentile(matriz_saldos, percentil, axis=0)
-    
-    df_resultados['media'] = np.mean(matriz_saldos, axis=0)
-    df_resultados['min'] = np.min(matriz_saldos, axis=0)
-    df_resultados['max'] = np.max(matriz_saldos, axis=0)
-    
-    # Calcular probabilidades de eventos específicos
-    # Exemplo: probabilidade de saldo negativo em cada dia
-    prob_saldo_negativo = np.mean(matriz_saldos < 0, axis=0)
-    df_resultados['prob_saldo_negativo'] = prob_saldo_negativo
-    
-    # Criar DataFrame com todas as simulações individuais (para visualização detalhada)
-    df_simulacoes = pd.DataFrame(
-        matriz_saldos.T,  # Transpor para ter dias nas linhas e simulações nas colunas
-        index=datas_simulacao,
-        columns=[f'sim_{i+1}' for i in range(num_simulacoes)]
-    )
-    
-    return df_resultados, df_simulacoes
+        return summary
+        
+    except Exception as e:
+        logger.error(f"Erro ao gerar resumo do cenário: {e}")
+        raise
 
-def visualizar_resultados_simulacao(df_resultados: pd.DataFrame, titulo: str = "Simulação de Monte Carlo - Fluxo de Caixa") -> plt.Figure:
-    """Cria uma visualização dos resultados da simulação de Monte Carlo."""
-    fig, ax = plt.subplots(figsize=(12, 6))
+# Função para criar dados de exemplo/teste
+def create_sample_forecast_data(months: int = 12) -> pd.DataFrame:
+    """
+    Cria dados de previsão de exemplo para testes.
     
-    # Plotar área entre percentis 5 e 95 (90% de confiança)
-    ax.fill_between(
-        df_resultados.index,
-        df_resultados['percentil_5'],
-        df_resultados['percentil_95'],
-        alpha=0.3,
-        color='lightblue',
-        label='Intervalo de 90% de confiança'
-    )
+    Args:
+        months: Número de meses para gerar
+        
+    Returns:
+        pd.DataFrame: DataFrame com dados de exemplo
+    """
+    month_names = [
+        'Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho',
+        'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro'
+    ]
     
-    # Plotar área entre percentis 25 e 75 (50% de confiança)
-    ax.fill_between(
-        df_resultados.index,
-        df_resultados['percentil_25'],
-        df_resultados['percentil_75'],
-        alpha=0.5,
-        color='blue',
-        label='Intervalo de 50% de confiança'
-    )
+    # Gerar dados com alguma variação sazonal
+    np.random.seed(42)  # Para reprodutibilidade
     
-    # Plotar mediana (percentil 50)
-    ax.plot(
-        df_resultados.index,
-        df_resultados['percentil_50'],
-        'b-',
-        linewidth=2,
-        label='Mediana'
-    )
+    sample_data = []
+    base_revenue = 15000
+    base_cost = 12000
     
-    # Plotar média
-    ax.plot(
-        df_resultados.index,
-        df_resultados['media'],
-        'r--',
-        linewidth=1.5,
-        label='Média'
-    )
+    for i in range(months):
+        month_name = month_names[i % 12]
+        
+        # Adicionar variação sazonal simples
+        seasonal_factor = 1.0
+        if month_name in ['Dezembro', 'Janeiro']:  # Meses de alta
+            seasonal_factor = 1.3
+        elif month_name in ['Fevereiro', 'Março']:  # Meses de baixa
+            seasonal_factor = 0.8
+        
+        # Adicionar crescimento ao longo do tempo
+        growth_factor = 1 + (i * 0.02)  # 2% de crescimento por mês
+        
+        # Adicionar ruído aleatório
+        noise = np.random.normal(1, 0.1)
+        
+        revenue = base_revenue * seasonal_factor * growth_factor * noise
+        cost = base_cost * seasonal_factor * growth_factor * np.random.normal(1, 0.05)
+        
+        sample_data.append({
+            'mes': month_name,
+            'receita_total': max(0, revenue),
+            'custo_total': max(0, cost),
+            'fluxo_de_caixa': revenue - cost
+        })
     
-    # Adicionar linha horizontal em y=0
-    ax.axhline(y=0, color='red', linestyle='-', alpha=0.3)
-    
-    # Configurar gráfico
-    ax.set_title(titulo)
-    ax.set_xlabel('Data')
-    ax.set_ylabel('Saldo Projetado')
-    ax.legend()
-    ax.grid(True, alpha=0.3)
-    
-    # Formatar eixo x para datas
-    fig.autofmt_xdate()
-    
-    return fig
+    return pd.DataFrame(sample_data)
 
-def analisar_probabilidades(df_resultados: pd.DataFrame) -> Dict[str, Any]:
-    """Analisa as probabilidades de eventos específicos com base nos resultados da simulação."""
-    analise = {}
-    
-    # Probabilidade de saldo negativo no final do período
-    analise["prob_saldo_negativo_final"] = df_resultados["prob_saldo_negativo"].iloc[-1]
-    
-    # Probabilidade de saldo negativo em qualquer momento
-    analise["prob_saldo_negativo_qualquer_momento"] = df_resultados["prob_saldo_negativo"].max()
-    
-    # Dia com maior probabilidade de saldo negativo
-    idx_max_prob_negativo = df_resultados["prob_saldo_negativo"].idxmax()
-    analise["dia_maior_prob_negativo"] = idx_max_prob_negativo
-    analise["valor_maior_prob_negativo"] = df_resultados["prob_saldo_negativo"].max()
-    
-    # Valor mínimo esperado (percentil 5 do último dia)
-    analise["valor_minimo_esperado"] = df_resultados["percentil_5"].iloc[-1]
-    
-    # Valor máximo esperado (percentil 95 do último dia)
-    analise["valor_maximo_esperado"] = df_resultados["percentil_95"].iloc[-1]
-    
-    # Valor mediano esperado (percentil 50 do último dia)
-    analise["valor_mediano_esperado"] = df_resultados["percentil_50"].iloc[-1]
-    
-    return analise
-
+# Função de teste/exemplo
 if __name__ == "__main__":
-    # Exemplo de uso da nova funcionalidade de simulação de cenários
-    print("=== Exemplo de Simulação de Cenários ===")
+    print("=== TESTE DO SIMULADOR DE CENÁRIOS ===")
     
-    # Criar dados de exemplo para demonstração
-    df_exemplo = pd.DataFrame({
-        'mes': ['Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho'],
-        'receita_total': [10000, 11000, 12000, 13000, 14000, 15000],
-        'custo_total': [8000, 8500, 9000, 9500, 10000, 10500],
-        'fluxo_de_caixa': [2000, 2500, 3000, 3500, 4000, 4500]
-    })
+    # Criar dados de exemplo
+    df_test = create_sample_forecast_data(12)
     
-    print("DataFrame Original:")
-    print(df_exemplo)
-    print(f"Total Receita Original: R$ {df_exemplo['receita_total'].sum():,.2f}")
-    print(f"Total Custo Original: R$ {df_exemplo['custo_total'].sum():,.2f}")
-    print(f"Total Fluxo Original: R$ {df_exemplo['fluxo_de_caixa'].sum():,.2f}")
+    print("\nDADOS ORIGINAIS:")
+    print(df_test[['mes', 'receita_total', 'custo_total', 'fluxo_de_caixa']].round(2))
     
-    # Exemplo 1: Cenário otimista sem sazonalidade
-    print("\n--- Cenário Otimista ---")
-    df_otimista = run_simulation(df_exemplo, 'otimista')
-    print(f"Total Receita Otimista: R$ {df_otimista['receita_total'].sum():,.2f}")
-    print(f"Total Custo Otimista: R$ {df_otimista['custo_total'].sum():,.2f}")
-    print(f"Total Fluxo Otimista: R$ {df_otimista['fluxo_de_caixa'].sum():,.2f}")
+    print(f"\nRESUMO ORIGINAL:")
+    print(f"Receita Total: R$ {df_test['receita_total'].sum():,.2f}")
+    print(f"Custo Total: R$ {df_test['custo_total'].sum():,.2f}")
+    print(f"Fluxo Total: R$ {df_test['fluxo_de_caixa'].sum():,.2f}")
     
-    # Exemplo 2: Cenário pessimista com sazonalidade
-    print("\n--- Cenário Pessimista com Sazonalidade ---")
-    regras_sazonalidade = [
-        {"month": "Dezembro", "revenue_change_percentage": 30},
+    # Teste 1: Cenário otimista simples
+    print("\n" + "="*50)
+    print("TESTE 1: CENÁRIO OTIMISTA")
+    print("="*50)
+    
+    try:
+        df_optimistic = run_simulation(df_test, 'otimista')
+        print("\nRESULTADO OTIMISTA:")
+        print(f"Receita Total: R$ {df_optimistic['receita_total'].sum():,.2f}")
+        print(f"Custo Total: R$ {df_optimistic['custo_total'].sum():,.2f}")
+        print(f"Fluxo Total: R$ {df_optimistic['fluxo_de_caixa'].sum():,.2f}")
+    except Exception as e:
+        print(f"ERRO no teste 1: {e}")
+    
+    # Teste 2: Cenário pessimista com sazonalidade
+    print("\n" + "="*50)
+    print("TESTE 2: CENÁRIO PESSIMISTA COM SAZONALIDADE")
+    print("="*50)
+    
+    seasonality_rules = [
+        {"month": "Dezembro", "revenue_change_percentage": 25},
+        {"month": "Janeiro", "revenue_change_percentage": -20},
         {"month": "Fevereiro", "revenue_change_percentage": -15}
     ]
     
-    # Para demonstração, vamos adicionar dezembro ao dataset
-    df_exemplo_extended = pd.concat([
-        df_exemplo,
-        pd.DataFrame({
-            'mes': ['Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro'],
-            'receita_total': [16000, 17000, 18000, 19000, 20000, 21000],
-            'custo_total': [11000, 11500, 12000, 12500, 13000, 13500],
-            'fluxo_de_caixa': [5000, 5500, 6000, 6500, 7000, 7500]
-        })
-    ], ignore_index=True)
+    try:
+        df_pessimistic = run_simulation(
+            df_test, 
+            'pessimista', 
+            seasonality_rules
+        )
+        
+        print("\nRESULTADO PESSIMISTA + SAZONALIDADE:")
+        print(f"Receita Total: R$ {df_pessimistic['receita_total'].sum():,.2f}")
+        print(f"Custo Total: R$ {df_pessimistic['custo_total'].sum():,.2f}")
+        print(f"Fluxo Total: R$ {df_pessimistic['fluxo_de_caixa'].sum():,.2f}")
+        
+        # Mostrar detalhes dos meses afetados pela sazonalidade
+        affected_months = ['Dezembro', 'Janeiro', 'Fevereiro']
+        print(f"\nDETALHES DOS MESES COM SAZONALIDADE:")
+        for month in affected_months:
+            month_data = df_pessimistic[df_pessimistic['mes'] == month]
+            if not month_data.empty:
+                print(f"{month}: Receita R$ {month_data['receita_total'].iloc[0]:,.2f}, "
+                      f"Fluxo R$ {month_data['fluxo_de_caixa'].iloc[0]:,.2f}")
+        
+        # Gerar resumo comparativo
+        summary = generate_scenario_summary(df_test, df_pessimistic, 'pessimista')
+        print(f"\nCOMPARAÇÃO:")
+        print(f"Mudança na Receita: {summary['percentage_changes']['receita_change']:+.1f}%")
+        print(f"Mudança no Custo: {summary['percentage_changes']['custo_change']:+.1f}%")
+        print(f"Mudança no Fluxo: {summary['percentage_changes']['fluxo_change']:+.1f}%")
+        
+    except Exception as e:
+        print(f"ERRO no teste 2: {e}")
+        import traceback
+        traceback.print_exc()
     
-    df_pessimista_sazonal = run_simulation(
-        df_exemplo_extended, 
-        'pessimista', 
-        regras_sazonalidade
-    )
-    
-    print(f"Total Receita Pessimista c/ Sazonalidade: R$ {df_pessimista_sazonal['receita_total'].sum():,.2f}")
-    print(f"Total Custo Pessimista c/ Sazonalidade: R$ {df_pessimista_sazonal['custo_total'].sum():,.2f}")
-    print(f"Total Fluxo Pessimista c/ Sazonalidade: R$ {df_pessimista_sazonal['fluxo_de_caixa'].sum():,.2f}")
-    
-    # Mostrar detalhes de dezembro e fevereiro
-    dezembro = df_pessimista_sazonal[df_pessimista_sazonal['mes'] == 'Dezembro']
-    fevereiro = df_pessimista_sazonal[df_pessimista_sazonal['mes'] == 'Fevereiro']
-    
-    if not dezembro.empty:
-        print(f"\nDezembro - Receita: R$ {dezembro['receita_total'].iloc[0]:,.2f}")
-        print(f"Dezembro - Fluxo: R$ {dezembro['fluxo_de_caixa'].iloc[0]:,.2f}")
-    
-    if not fevereiro.empty:
-        print(f"Fevereiro - Receita: R$ {fevereiro['receita_total'].iloc[0]:,.2f}")
-        print(f"Fevereiro - Fluxo: R$ {fevereiro['fluxo_de_caixa'].iloc[0]:,.2f}")
-    
-    # Gerar resumo comparativo
-    print("\n--- Resumo Comparativo ---")
-    resumo = generate_scenario_summary(df_exemplo_extended, df_pessimista_sazonal, 'pessimista')
-    print(f"Mudança na Receita: {resumo['percentage_changes']['receita_change']:+.1f}%")
-    print(f"Mudança no Custo: {resumo['percentage_changes']['custo_change']:+.1f}%")
-    print(f"Mudança no Fluxo: {resumo['percentage_changes']['fluxo_change']:+.1f}%")
+    print("\n" + "="*50)
+    print("TESTES CONCLUÍDOS")
+    print("="*50)
