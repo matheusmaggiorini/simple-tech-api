@@ -38,7 +38,7 @@ def calcular_estatisticas_historicas(df: pd.DataFrame) -> Dict[str, Any]:
     }
     return {key: (float(value) if isinstance(value, (np.number, np.float64)) else value) for key, value in stats.items()}
 
-# --- NOVO ENDPOINT INTELIGENTE PARA UPLOAD DE EXCEL ---
+# --- ENDPOINT INTELIGENTE PARA UPLOAD DE EXCEL ---
 @router.post("/upload_excel_bundle", response_model=FileUploadResponse)
 async def upload_excel_bundle(file: UploadFile = File(...)):
     """
@@ -52,10 +52,11 @@ async def upload_excel_bundle(file: UploadFile = File(...)):
         # --- Processamento da Aba de Fluxo de Caixa ---
         print("Lendo a aba 'FluxoDeCaixa' do arquivo Excel...")
         df_raw_cashflow = pd.read_excel(file.file, sheet_name='FluxoDeCaixa')
-        # 1. Diagnóstico (pode manter para referência)
+        
+        # Diagnóstico e correção de colunas
         print("Colunas originais lidas do Excel:", df_raw_cashflow.columns.tolist())
 
-        # 2. Renomear a coluna problemática de 'Unnamed: 0' para 'data'
+        # Renomear a coluna problemática de 'Unnamed: 0' para 'data'
         if 'Unnamed: 0' in df_raw_cashflow.columns:
             df_raw_cashflow.rename(columns={'Unnamed: 0': 'data'}, inplace=True)
             print("Coluna 'Unnamed: 0' foi renomeada para 'data'.")
@@ -67,7 +68,7 @@ async def upload_excel_bundle(file: UploadFile = File(...)):
         df_processed = processar_dados(df_raw_cashflow)
         state.global_processed_df = df_processed
         state.global_historical_stats = calcular_estatisticas_historicas(df_processed)
-        state.global_prediction_model = None
+        state.global_prediction_model = None  # Reset do modelo quando novos dados são carregados
         state.global_feature_importance = None
         print("Dados de fluxo de caixa processados e salvos no estado.")
 
@@ -94,7 +95,7 @@ async def upload_excel_bundle(file: UploadFile = File(...)):
 
 
 @router.get("/view_processed")
-async def view_processed_data(limit: int = 10):
+async def view_processed_data(limit: int = 50):
     """Retorna uma prévia dos dados de fluxo de caixa carregados."""
     if state.global_processed_df is None or state.global_processed_df.empty:
         raise HTTPException(status_code=404, detail="Nenhum dado de fluxo de caixa processado.")
@@ -104,3 +105,27 @@ async def view_processed_data(limit: int = 10):
         df_copy[col] = df_copy[col].dt.strftime('%Y-%m-%d')
     df_copy = df_copy.replace({np.nan: None})
     return JSONResponse(content=df_copy.to_dict(orient="records"))
+
+
+@router.get("/operational_cycles")
+async def get_operational_cycles():
+    """Retorna os ciclos operacionais calculados que estão no estado global."""
+    if not hasattr(state, 'global_cycle_metrics') or state.global_cycle_metrics is None:
+        raise HTTPException(
+            status_code=404, 
+            detail="Nenhum dado de ciclos operacionais encontrado. Faça o upload do arquivo Excel primeiro."
+        )
+    
+    return JSONResponse(content=state.global_cycle_metrics)
+
+
+@router.get("/statistics")
+async def get_statistics():
+    """Retorna as estatísticas históricas calculadas."""
+    if state.global_historical_stats is None:
+        raise HTTPException(
+            status_code=404, 
+            detail="Nenhuma estatística calculada. Faça o upload dos dados primeiro."
+        )
+    
+    return JSONResponse(content=state.global_historical_stats)

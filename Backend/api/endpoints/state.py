@@ -10,12 +10,8 @@ from typing import Dict, Any, Optional
 global_processed_df: Optional[pd.DataFrame] = None
 global_prediction_model: Any = None  # Armazenar o modelo treinado
 global_historical_stats: Optional[Dict[str, Any]] = None
+global_cycle_metrics: Optional[Dict[str, Any]] = None  # Armazenar os prazos médios
+global_feature_importance: Optional[Any] = None  # Armazenar importância das features
 
 # Diretório para uploads temporários
 UPLOAD_DIR = "data/api_uploads"
-
-# Variável para armazenar o modelo de previsão treinado
-global_prediction_model = None
-
-# Variável para armazenar os resultados da análise de importância das features
-global_feature_importance = None 

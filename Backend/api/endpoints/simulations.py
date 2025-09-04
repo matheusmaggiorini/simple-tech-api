@@ -45,7 +45,7 @@ def gerar_parametros_simulacao(
         "num_simulacoes": num_simulacoes,
         "variacao_entrada": variacao_entrada,
         "variacao_saida": variacao_saida,
-        "data_inicio_simulacao": estatisticas.get("ultima_data", datetime.now()) + timedelta(days=1)
+        "data_inicio_simulacao": datetime.now() + timedelta(days=1)
     }
     
     # Definir saldo inicial
@@ -184,7 +184,7 @@ def analisar_probabilidades(df_resultados: pd.DataFrame) -> Dict[str, Any]:
     
     # Dia com maior probabilidade de saldo negativo
     idx_max_prob_negativo = df_resultados["prob_saldo_negativo"].idxmax()
-    analise["dia_maior_prob_negativo"] = idx_max_prob_negativo.strftime('%Y-%m-%d')
+    analise["dia_maior_prob_negativo"] = idx_max_prob_negativo.strftime('%Y-%m-%d') if hasattr(idx_max_prob_negativo, 'strftime') else str(idx_max_prob_negativo)
     analise["valor_maior_prob_negativo"] = float(df_resultados["prob_saldo_negativo"].max())
     
     # Valores esperados
@@ -196,10 +196,18 @@ def analisar_probabilidades(df_resultados: pd.DataFrame) -> Dict[str, Any]:
 
 @router.post("/scenarios", response_model=ScenarioResponse)
 async def simulate_scenarios(params: ScenarioParams):
+    """Executa simulação de Monte Carlo baseada nos dados históricos carregados."""
+    # Verificar se os dados necessários estão disponíveis
     if state.global_processed_df is None or state.global_historical_stats is None:
-        raise HTTPException(status_code=400, detail="Dados não carregados ou estatísticas não calculadas. Faça upload de um arquivo CSV primeiro.")
+        raise HTTPException(
+            status_code=400, 
+            detail="Dados não carregados ou estatísticas não calculadas. Faça upload de um arquivo Excel primeiro."
+        )
 
     try:
+        # Log dos parâmetros recebidos
+        print(f"Parâmetros da simulação recebidos: {params.dict()}")
+        
         # Gerar parâmetros para simulação
         parametros_sim = gerar_parametros_simulacao(
             state.global_historical_stats,
@@ -210,12 +218,31 @@ async def simulate_scenarios(params: ScenarioParams):
             saldo_inicial=params.saldo_inicial_simulacao
         )
         
+        print(f"Parâmetros gerados para simulação: {list(parametros_sim.keys())}")
+        
         # Executar simulação
         df_resultados_sim, _ = executar_simulacao_monte_carlo(parametros_sim)
         
         # Analisar probabilidades dos resultados da simulação
         analise_prob = analisar_probabilidades(df_resultados_sim)
         
+        print(f"Análise de probabilidades concluída: {analise_prob}")
+        
         return ScenarioResponse(results_summary=analise_prob)
+        
     except Exception as e:
+        import traceback
+        print(f"Erro na simulação: {e}")
+        print(traceback.format_exc())
         raise HTTPException(status_code=500, detail=f"Erro interno ao executar simulação: {str(e)}")
+
+# Endpoint adicional para diagnóstico
+@router.get("/status")
+async def simulation_status():
+    """Retorna o status dos dados necessários para simulação."""
+    return {
+        "dados_processados_disponiveis": state.global_processed_df is not None,
+        "estatisticas_disponiveis": state.global_historical_stats is not None,
+        "num_registros": len(state.global_processed_df) if state.global_processed_df is not None else 0,
+        "estatisticas_chave": state.global_historical_stats if state.global_historical_stats is not None else {}
+    }
