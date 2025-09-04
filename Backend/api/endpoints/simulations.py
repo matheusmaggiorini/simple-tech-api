@@ -1,8 +1,8 @@
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, validator
 import pandas as pd
 import numpy as np
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 from datetime import datetime, timedelta
 import sys
 import os
@@ -10,13 +10,53 @@ import os
 # Adiciona o diretório raiz ao path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
 
-# Importar o estado compartilhado
+# Importar o estado compartilhado e o simulador de cenários
 from api.endpoints import state
+from core.scenario_simulator import run_simulation
 
 # Definir o router
 router = APIRouter()
 
 # Definir os modelos de request/response
+class SeasonalityRule(BaseModel):
+    """Modelo para regras de sazonalidade."""
+    month: str
+    revenue_change_percentage: float
+    
+    @validator('month')
+    def validate_month(cls, v):
+        """Valida se o mês está no formato correto."""
+        valid_months = [
+            'Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho',
+            'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro'
+        ]
+        if v not in valid_months:
+            raise ValueError(f'Mês deve ser um dos seguintes: {", ".join(valid_months)}')
+        return v
+
+class SimulationRequest(BaseModel):
+    """Modelo para requisição de simulação de cenários."""
+    scenario_type: str
+    seasonality_rules: Optional[List[SeasonalityRule]] = None
+    
+    @validator('scenario_type')
+    def validate_scenario_type(cls, v):
+        """Valida se o tipo de cenário é válido."""
+        valid_scenarios = ['otimista', 'conservador', 'pessimista']
+        if v not in valid_scenarios:
+            raise ValueError(f'Tipo de cenário deve ser um dos seguintes: {", ".join(valid_scenarios)}')
+        return v
+
+class SimulationResponse(BaseModel):
+    """Modelo para resposta da simulação."""
+    scenario_type: str
+    original_summary: Dict[str, Any]
+    simulated_summary: Dict[str, Any]
+    monthly_details: List[Dict[str, Any]]
+    seasonality_applied: bool
+    seasonality_rules_count: int
+
+# Cenários macroeconômicos predefinidos (mantido para compatibilidade)
 class ScenarioParams(BaseModel):
     variacao_entrada: float = 0.10
     variacao_saida: float = 0.10
@@ -27,6 +67,114 @@ class ScenarioParams(BaseModel):
 class ScenarioResponse(BaseModel):
     results_summary: Dict[str, Any]
 
+def calculate_dataframe_summary(df: pd.DataFrame) -> Dict[str, Any]:
+    """Calcula um resumo estatístico do DataFrame de previsão."""
+    summary = {
+        "total_receita": float(df['receita_total'].sum()),
+        "total_custo": float(df['custo_total'].sum()),
+        "total_fluxo_de_caixa": float(df['fluxo_de_caixa'].sum()),
+        "media_mensal_receita": float(df['receita_total'].mean()),
+        "media_mensal_custo": float(df['custo_total'].mean()),
+        "media_mensal_fluxo": float(df['fluxo_de_caixa'].mean()),
+        "meses_com_fluxo_positivo": int((df['fluxo_de_caixa'] > 0).sum()),
+        "meses_com_fluxo_negativo": int((df['fluxo_de_caixa'] < 0).sum()),
+        "maior_receita_mensal": float(df['receita_total'].max()),
+        "menor_receita_mensal": float(df['receita_total'].min()),
+        "maior_fluxo_mensal": float(df['fluxo_de_caixa'].max()),
+        "menor_fluxo_mensal": float(df['fluxo_de_caixa'].min())
+    }
+    return summary
+
+def convert_dataframe_to_monthly_details(df: pd.DataFrame) -> List[Dict[str, Any]]:
+    """Converte o DataFrame em uma lista de detalhes mensais."""
+    monthly_details = []
+    for _, row in df.iterrows():
+        month_detail = {
+            "mes": row['mes'],
+            "receita_total": float(row['receita_total']),
+            "custo_total": float(row['custo_total']),
+            "fluxo_de_caixa": float(row['fluxo_de_caixa'])
+        }
+        monthly_details.append(month_detail)
+    return monthly_details
+
+@router.post("/scenario-simulation", response_model=SimulationResponse)
+async def simulate_scenario(request: SimulationRequest):
+    """
+    Executa simulação de cenários com base nos parâmetros fornecidos.
+    
+    Args:
+        request: Parâmetros da simulação incluindo tipo de cenário e regras de sazonalidade
+        
+    Returns:
+        SimulationResponse: Resultados da simulação com comparação entre original e simulado
+        
+    Raises:
+        HTTPException: Se não houver dados carregados ou ocorrer erro na simulação
+    """
+    # Verificar se temos dados de previsão disponíveis
+    if state.global_processed_df is None:
+        raise HTTPException(
+            status_code=400, 
+            detail="Dados não carregados. Faça upload de um arquivo CSV com previsões primeiro."
+        )
+    
+    # Verificar se o DataFrame possui as colunas necessárias
+    required_columns = ['mes', 'receita_total', 'custo_total', 'fluxo_de_caixa']
+    missing_columns = [col for col in required_columns if col not in state.global_processed_df.columns]
+    
+    if missing_columns:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Colunas necessárias não encontradas no DataFrame: {', '.join(missing_columns)}"
+        )
+    
+    try:
+        # Converter regras de sazonalidade para dicionário simples se fornecidas
+        seasonality_dict = None
+        if request.seasonality_rules:
+            seasonality_dict = [
+                {
+                    "month": rule.month,
+                    "revenue_change_percentage": rule.revenue_change_percentage
+                }
+                for rule in request.seasonality_rules
+            ]
+        
+        # Executar simulação
+        df_original = state.global_processed_df.copy()
+        df_simulated = run_simulation(
+            forecast_df=df_original,
+            scenario_type=request.scenario_type,
+            seasonality_rules=seasonality_dict
+        )
+        
+        # Calcular resumos
+        original_summary = calculate_dataframe_summary(df_original)
+        simulated_summary = calculate_dataframe_summary(df_simulated)
+        
+        # Converter para detalhes mensais
+        monthly_details = convert_dataframe_to_monthly_details(df_simulated)
+        
+        # Preparar resposta
+        response = SimulationResponse(
+            scenario_type=request.scenario_type,
+            original_summary=original_summary,
+            simulated_summary=simulated_summary,
+            monthly_details=monthly_details,
+            seasonality_applied=request.seasonality_rules is not None,
+            seasonality_rules_count=len(request.seasonality_rules) if request.seasonality_rules else 0
+        )
+        
+        return response
+        
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Erro interno ao executar simulação de cenário: {str(e)}"
+        )
+
+# Mantendo endpoint legado para compatibilidade
 def gerar_parametros_simulacao(
     estatisticas: Dict[str, Any],
     variacao_entrada: float = 0.1,
@@ -45,7 +193,7 @@ def gerar_parametros_simulacao(
         "num_simulacoes": num_simulacoes,
         "variacao_entrada": variacao_entrada,
         "variacao_saida": variacao_saida,
-        "data_inicio_simulacao": datetime.now() + timedelta(days=1)
+        "data_inicio_simulacao": estatisticas.get("ultima_data", datetime.now()) + timedelta(days=1)
     }
     
     # Definir saldo inicial
@@ -184,7 +332,7 @@ def analisar_probabilidades(df_resultados: pd.DataFrame) -> Dict[str, Any]:
     
     # Dia com maior probabilidade de saldo negativo
     idx_max_prob_negativo = df_resultados["prob_saldo_negativo"].idxmax()
-    analise["dia_maior_prob_negativo"] = idx_max_prob_negativo.strftime('%Y-%m-%d') if hasattr(idx_max_prob_negativo, 'strftime') else str(idx_max_prob_negativo)
+    analise["dia_maior_prob_negativo"] = idx_max_prob_negativo.strftime('%Y-%m-%d')
     analise["valor_maior_prob_negativo"] = float(df_resultados["prob_saldo_negativo"].max())
     
     # Valores esperados
@@ -196,18 +344,14 @@ def analisar_probabilidades(df_resultados: pd.DataFrame) -> Dict[str, Any]:
 
 @router.post("/scenarios", response_model=ScenarioResponse)
 async def simulate_scenarios(params: ScenarioParams):
-    """Executa simulação de Monte Carlo baseada nos dados históricos carregados."""
-    # Verificar se os dados necessários estão disponíveis
+    """Endpoint legado para simulação de Monte Carlo (mantido para compatibilidade)."""
     if state.global_processed_df is None or state.global_historical_stats is None:
         raise HTTPException(
             status_code=400, 
-            detail="Dados não carregados ou estatísticas não calculadas. Faça upload de um arquivo Excel primeiro."
+            detail="Dados não carregados ou estatísticas não calculadas. Faça upload de um arquivo CSV primeiro."
         )
 
     try:
-        # Log dos parâmetros recebidos
-        print(f"Parâmetros da simulação recebidos: {params.dict()}")
-        
         # Gerar parâmetros para simulação
         parametros_sim = gerar_parametros_simulacao(
             state.global_historical_stats,
@@ -218,31 +362,12 @@ async def simulate_scenarios(params: ScenarioParams):
             saldo_inicial=params.saldo_inicial_simulacao
         )
         
-        print(f"Parâmetros gerados para simulação: {list(parametros_sim.keys())}")
-        
         # Executar simulação
         df_resultados_sim, _ = executar_simulacao_monte_carlo(parametros_sim)
         
         # Analisar probabilidades dos resultados da simulação
         analise_prob = analisar_probabilidades(df_resultados_sim)
         
-        print(f"Análise de probabilidades concluída: {analise_prob}")
-        
         return ScenarioResponse(results_summary=analise_prob)
-        
     except Exception as e:
-        import traceback
-        print(f"Erro na simulação: {e}")
-        print(traceback.format_exc())
         raise HTTPException(status_code=500, detail=f"Erro interno ao executar simulação: {str(e)}")
-
-# Endpoint adicional para diagnóstico
-@router.get("/status")
-async def simulation_status():
-    """Retorna o status dos dados necessários para simulação."""
-    return {
-        "dados_processados_disponiveis": state.global_processed_df is not None,
-        "estatisticas_disponiveis": state.global_historical_stats is not None,
-        "num_registros": len(state.global_processed_df) if state.global_processed_df is not None else 0,
-        "estatisticas_chave": state.global_historical_stats if state.global_historical_stats is not None else {}
-    }

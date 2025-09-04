@@ -5,11 +5,253 @@ import numpy as np
 from typing import Dict, List, Optional, Tuple, Any
 import matplotlib.pyplot as plt
 from datetime import datetime, timedelta
+import logging
 
-# Simulação de Monte Carlo para fluxo de caixa
-# Este módulo simula diferentes cenários de fluxo de caixa com base em variações aleatórias
-# dos valores históricos e parâmetros definidos pelo usuário.
+# Configurar logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
+# Cenários macroeconômicos predefinidos
+MACROECONOMIC_SCENARIOS = {
+    "otimista": {
+        "revenue_change": 0.15,  # +15%
+        "cost_change": -0.10,    # -10%
+        "description": "Cenário otimista: aumento de receita e redução de custos"
+    },
+    "conservador": {
+        "revenue_change": 0.05,  # +5%
+        "cost_change": 0.03,     # +3%
+        "description": "Cenário conservador: crescimento moderado com aumento leve de custos"
+    },
+    "pessimista": {
+        "revenue_change": -0.10, # -10%
+        "cost_change": 0.20,     # +20%
+        "description": "Cenário pessimista: redução de receita e aumento significativo de custos"
+    }
+}
+
+def validate_forecast_dataframe(df: pd.DataFrame) -> bool:
+    """
+    Valida se o DataFrame possui as colunas necessárias para simulação.
+    
+    Args:
+        df: DataFrame com dados de previsão
+        
+    Returns:
+        bool: True se válido, False caso contrário
+        
+    Raises:
+        ValueError: Se o DataFrame não possuir as colunas necessárias
+    """
+    required_columns = ['mes', 'receita_total', 'custo_total', 'fluxo_de_caixa']
+    missing_columns = [col for col in required_columns if col not in df.columns]
+    
+    if missing_columns:
+        raise ValueError(f"DataFrame deve conter as colunas: {', '.join(missing_columns)}")
+    
+    if df.empty:
+        raise ValueError("DataFrame não pode estar vazio")
+    
+    return True
+
+def apply_macroeconomic_scenario(df: pd.DataFrame, scenario_type: str) -> pd.DataFrame:
+    """
+    Aplica ajustes macroeconômicos predefinidos ao DataFrame de previsão.
+    
+    Args:
+        df: DataFrame com dados de previsão
+        scenario_type: Tipo do cenário ('otimista', 'conservador', 'pessimista')
+        
+    Returns:
+        pd.DataFrame: DataFrame com ajustes aplicados
+        
+    Raises:
+        ValueError: Se o tipo de cenário não for válido
+    """
+    if scenario_type not in MACROECONOMIC_SCENARIOS:
+        valid_scenarios = ', '.join(MACROECONOMIC_SCENARIOS.keys())
+        raise ValueError(f"Tipo de cenário inválido. Opções válidas: {valid_scenarios}")
+    
+    scenario_config = MACROECONOMIC_SCENARIOS[scenario_type]
+    df_adjusted = df.copy()
+    
+    # Aplicar mudanças percentuais
+    revenue_multiplier = 1 + scenario_config["revenue_change"]
+    cost_multiplier = 1 + scenario_config["cost_change"]
+    
+    logger.info(f"Aplicando cenário {scenario_type}: receita {revenue_multiplier:.2%}, custo {cost_multiplier:.2%}")
+    
+    # Ajustar receita e custo
+    df_adjusted['receita_total'] = df_adjusted['receita_total'] * revenue_multiplier
+    df_adjusted['custo_total'] = df_adjusted['custo_total'] * cost_multiplier
+    
+    return df_adjusted
+
+def apply_seasonality_adjustments(df: pd.DataFrame, seasonality_rules: List[Dict[str, Any]]) -> pd.DataFrame:
+    """
+    Aplica ajustes de sazonalidade específicos por mês ao DataFrame.
+    
+    Args:
+        df: DataFrame com dados de previsão já ajustados pelo cenário macroeconômico
+        seasonality_rules: Lista de regras de sazonalidade
+            Formato: [{"month": "Dezembro", "revenue_change_percentage": 30}]
+            
+    Returns:
+        pd.DataFrame: DataFrame com ajustes de sazonalidade aplicados
+    """
+    df_seasonal = df.copy()
+    
+    logger.info(f"Aplicando {len(seasonality_rules)} regras de sazonalidade")
+    
+    for rule in seasonality_rules:
+        month = rule.get("month")
+        revenue_change = rule.get("revenue_change_percentage", 0)
+        
+        if not month or revenue_change is None:
+            logger.warning(f"Regra de sazonalidade inválida: {rule}")
+            continue
+        
+        # Encontrar linhas correspondentes ao mês
+        month_mask = df_seasonal['mes'].str.contains(month, case=False, na=False)
+        matching_rows = df_seasonal[month_mask]
+        
+        if matching_rows.empty:
+            logger.warning(f"Nenhum registro encontrado para o mês: {month}")
+            continue
+        
+        # Aplicar mudança percentual apenas na receita
+        multiplier = 1 + (revenue_change / 100)
+        df_seasonal.loc[month_mask, 'receita_total'] *= multiplier
+        
+        logger.info(f"Ajuste sazonal aplicado ao mês {month}: {revenue_change:+.1f}% na receita")
+        logger.info(f"Registros afetados: {len(matching_rows)}")
+    
+    return df_seasonal
+
+def recalculate_cash_flow(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Recalcula a coluna de fluxo de caixa após os ajustes.
+    
+    Args:
+        df: DataFrame com receita e custo já ajustados
+        
+    Returns:
+        pd.DataFrame: DataFrame com fluxo de caixa recalculado
+    """
+    df_recalculated = df.copy()
+    df_recalculated['fluxo_de_caixa'] = df_recalculated['receita_total'] - df_recalculated['custo_total']
+    
+    logger.info("Fluxo de caixa recalculado após ajustes")
+    
+    return df_recalculated
+
+def run_simulation(
+    forecast_df: pd.DataFrame,
+    scenario_type: str,
+    seasonality_rules: Optional[List[Dict[str, Any]]] = None
+) -> pd.DataFrame:
+    """
+    Executa simulação de cenários aplicando ajustes macroeconômicos e de sazonalidade.
+    
+    Args:
+        forecast_df: DataFrame com previsão base contendo colunas:
+                    - mes: Nome do mês
+                    - receita_total: Receita total prevista
+                    - custo_total: Custo total previsto
+                    - fluxo_de_caixa: Fluxo de caixa previsto (receita - custo)
+        scenario_type: Tipo de cenário ('otimista', 'conservador', 'pessimista')
+        seasonality_rules: Lista opcional de regras de sazonalidade
+                          Formato: [{"month": "Dezembro", "revenue_change_percentage": 30}]
+                          
+    Returns:
+        pd.DataFrame: DataFrame simulado com todos os ajustes aplicados
+        
+    Raises:
+        ValueError: Se os parâmetros forem inválidos
+        
+    Example:
+        >>> df = pd.DataFrame({
+        ...     'mes': ['Janeiro', 'Fevereiro', 'Março'],
+        ...     'receita_total': [1000, 1100, 1200],
+        ...     'custo_total': [800, 850, 900],
+        ...     'fluxo_de_caixa': [200, 250, 300]
+        ... })
+        >>> seasonality = [{"month": "Fevereiro", "revenue_change_percentage": -15}]
+        >>> result = run_simulation(df, 'otimista', seasonality)
+    """
+    logger.info("Iniciando simulação de cenários")
+    logger.info(f"Cenário: {scenario_type}")
+    logger.info(f"Regras de sazonalidade: {len(seasonality_rules) if seasonality_rules else 0}")
+    
+    # 1. Validar DataFrame de entrada
+    validate_forecast_dataframe(forecast_df)
+    
+    # 2. Criar cópia do DataFrame original
+    df_simulation = forecast_df.copy()
+    logger.info(f"DataFrame original: {len(df_simulation)} registros")
+    
+    # 3. Aplicar ajustes de cenário macroeconômico
+    df_simulation = apply_macroeconomic_scenario(df_simulation, scenario_type)
+    
+    # 4. Aplicar ajustes de sazonalidade (se fornecidos)
+    if seasonality_rules and len(seasonality_rules) > 0:
+        df_simulation = apply_seasonality_adjustments(df_simulation, seasonality_rules)
+    
+    # 5. Recalcular fluxo de caixa
+    df_simulation = recalculate_cash_flow(df_simulation)
+    
+    logger.info("Simulação de cenários concluída com sucesso")
+    
+    return df_simulation
+
+def generate_scenario_summary(
+    original_df: pd.DataFrame, 
+    simulated_df: pd.DataFrame, 
+    scenario_type: str
+) -> Dict[str, Any]:
+    """
+    Gera um resumo comparativo entre os cenários original e simulado.
+    
+    Args:
+        original_df: DataFrame original
+        simulated_df: DataFrame simulado
+        scenario_type: Tipo de cenário aplicado
+        
+    Returns:
+        Dict[str, Any]: Resumo com comparações e métricas
+    """
+    original_totals = {
+        "receita": original_df['receita_total'].sum(),
+        "custo": original_df['custo_total'].sum(),
+        "fluxo": original_df['fluxo_de_caixa'].sum()
+    }
+    
+    simulated_totals = {
+        "receita": simulated_df['receita_total'].sum(),
+        "custo": simulated_df['custo_total'].sum(),
+        "fluxo": simulated_df['fluxo_de_caixa'].sum()
+    }
+    
+    changes = {
+        "receita_change": ((simulated_totals["receita"] - original_totals["receita"]) / original_totals["receita"]) * 100,
+        "custo_change": ((simulated_totals["custo"] - original_totals["custo"]) / original_totals["custo"]) * 100,
+        "fluxo_change": ((simulated_totals["fluxo"] - original_totals["fluxo"]) / original_totals["fluxo"]) * 100 if original_totals["fluxo"] != 0 else 0
+    }
+    
+    summary = {
+        "scenario_type": scenario_type,
+        "scenario_description": MACROECONOMIC_SCENARIOS[scenario_type]["description"],
+        "original_totals": original_totals,
+        "simulated_totals": simulated_totals,
+        "percentage_changes": changes,
+        "months_analyzed": len(original_df),
+        "positive_cash_flow_months_original": int((original_df['fluxo_de_caixa'] > 0).sum()),
+        "positive_cash_flow_months_simulated": int((simulated_df['fluxo_de_caixa'] > 0).sum())
+    }
+    
+    return summary
+
+# Simulação de Monte Carlo para fluxo de caixa (funcionalidade existente mantida)
 def calcular_estatisticas_historicas(df_historico: pd.DataFrame) -> Dict[str, Any]:
     """Calcula estatísticas básicas do histórico de fluxo de caixa para uso na simulação."""
     if df_historico.empty or "data" not in df_historico.columns:
@@ -110,7 +352,7 @@ def gerar_parametros_simulacao(
         )
     
     # Alternativa: usar estatísticas de fluxo diário se não temos entrada/saída separadas
-    if "media_fluxo" in estatisticas and ("media_entrada" not in parametros or "media_saida" not in parametros):
+    if "media_fluxo" in estatisticas and ("media_entrada_base" not in parametros):
         parametros["media_fluxo_base"] = estatisticas["media_fluxo"]
         parametros["media_fluxo_min"] = estatisticas["media_fluxo"] * (1 - variacao_entrada)  # Usando variação_entrada como proxy
         parametros["media_fluxo_max"] = estatisticas["media_fluxo"] * (1 + variacao_entrada)
@@ -296,71 +538,73 @@ def analisar_probabilidades(df_resultados: pd.DataFrame) -> Dict[str, Any]:
     return analise
 
 if __name__ == "__main__":
-    # Exemplo de uso
-    # Criar dados históricos de exemplo
-    datas_exemplo = pd.date_range(start="2023-01-01", periods=100, freq="D")
-    np.random.seed(42)  # Para reprodutibilidade
+    # Exemplo de uso da nova funcionalidade de simulação de cenários
+    print("=== Exemplo de Simulação de Cenários ===")
     
-    # Simular entradas com tendência crescente e sazonalidade semanal
-    entradas_base = np.linspace(100, 150, 100)  # Tendência crescente
-    sazonalidade = np.sin(np.arange(100) * (2 * np.pi / 7)) * 20  # Sazonalidade semanal
-    ruido_entradas = np.random.normal(0, 10, 100)  # Ruído aleatório
-    entradas = entradas_base + sazonalidade + ruido_entradas
-    entradas = np.maximum(entradas, 0)  # Garantir que não há entradas negativas
-    
-    # Simular saídas com padrão diferente
-    saidas_base = np.linspace(80, 120, 100)  # Tendência crescente mais lenta
-    ruido_saidas = np.random.normal(0, 15, 100)  # Ruído aleatório maior
-    saidas = saidas_base + ruido_saidas
-    saidas = np.maximum(saidas, 0)  # Garantir que não há saídas negativas
-    
-    # Calcular fluxo e saldo
-    fluxo_diario = entradas - saidas
-    saldo = np.cumsum(fluxo_diario) + 1000  # Começando com saldo inicial de 1000
-    
-    # Criar DataFrame histórico
-    df_historico = pd.DataFrame({
-        "data": datas_exemplo,
-        "entrada": entradas,
-        "saida": saidas,
-        "fluxo_diario": fluxo_diario,
-        "saldo": saldo
+    # Criar dados de exemplo para demonstração
+    df_exemplo = pd.DataFrame({
+        'mes': ['Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho'],
+        'receita_total': [10000, 11000, 12000, 13000, 14000, 15000],
+        'custo_total': [8000, 8500, 9000, 9500, 10000, 10500],
+        'fluxo_de_caixa': [2000, 2500, 3000, 3500, 4000, 4500]
     })
     
-    print("--- DataFrame Histórico de Exemplo (Head) ---")
-    print(df_historico.head())
+    print("DataFrame Original:")
+    print(df_exemplo)
+    print(f"Total Receita Original: R$ {df_exemplo['receita_total'].sum():,.2f}")
+    print(f"Total Custo Original: R$ {df_exemplo['custo_total'].sum():,.2f}")
+    print(f"Total Fluxo Original: R$ {df_exemplo['fluxo_de_caixa'].sum():,.2f}")
     
-    # Calcular estatísticas históricas
-    estatisticas = calcular_estatisticas_historicas(df_historico)
-    print("\n--- Estatísticas Históricas ---")
-    for chave, valor in estatisticas.items():
-        print(f"{chave}: {valor}")
+    # Exemplo 1: Cenário otimista sem sazonalidade
+    print("\n--- Cenário Otimista ---")
+    df_otimista = run_simulation(df_exemplo, 'otimista')
+    print(f"Total Receita Otimista: R$ {df_otimista['receita_total'].sum():,.2f}")
+    print(f"Total Custo Otimista: R$ {df_otimista['custo_total'].sum():,.2f}")
+    print(f"Total Fluxo Otimista: R$ {df_otimista['fluxo_de_caixa'].sum():,.2f}")
     
-    # Gerar parâmetros para simulação
-    parametros_simulacao = gerar_parametros_simulacao(
-        estatisticas,
-        variacao_entrada=0.15,  # 15% de variação na média de entradas
-        variacao_saida=0.20,    # 20% de variação na média de saídas
-        dias_simulacao=30,      # Simular 30 dias
-        num_simulacoes=500,     # 500 simulações
-        seed=42                 # Para reprodutibilidade
+    # Exemplo 2: Cenário pessimista com sazonalidade
+    print("\n--- Cenário Pessimista com Sazonalidade ---")
+    regras_sazonalidade = [
+        {"month": "Dezembro", "revenue_change_percentage": 30},
+        {"month": "Fevereiro", "revenue_change_percentage": -15}
+    ]
+    
+    # Para demonstração, vamos adicionar dezembro ao dataset
+    df_exemplo_extended = pd.concat([
+        df_exemplo,
+        pd.DataFrame({
+            'mes': ['Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro'],
+            'receita_total': [16000, 17000, 18000, 19000, 20000, 21000],
+            'custo_total': [11000, 11500, 12000, 12500, 13000, 13500],
+            'fluxo_de_caixa': [5000, 5500, 6000, 6500, 7000, 7500]
+        })
+    ], ignore_index=True)
+    
+    df_pessimista_sazonal = run_simulation(
+        df_exemplo_extended, 
+        'pessimista', 
+        regras_sazonalidade
     )
-    print("\n--- Parâmetros de Simulação ---")
-    for chave, valor in parametros_simulacao.items():
-        print(f"{chave}: {valor}")
     
-    # Executar simulação de Monte Carlo
-    df_resultados, df_simulacoes = executar_simulacao_monte_carlo(parametros_simulacao)
-    print("\n--- Resultados da Simulação (Head) ---")
-    print(df_resultados.head())
+    print(f"Total Receita Pessimista c/ Sazonalidade: R$ {df_pessimista_sazonal['receita_total'].sum():,.2f}")
+    print(f"Total Custo Pessimista c/ Sazonalidade: R$ {df_pessimista_sazonal['custo_total'].sum():,.2f}")
+    print(f"Total Fluxo Pessimista c/ Sazonalidade: R$ {df_pessimista_sazonal['fluxo_de_caixa'].sum():,.2f}")
     
-    # Analisar probabilidades
-    analise_prob = analisar_probabilidades(df_resultados)
-    print("\n--- Análise de Probabilidades ---")
-    for chave, valor in analise_prob.items():
-        print(f"{chave}: {valor}")
+    # Mostrar detalhes de dezembro e fevereiro
+    dezembro = df_pessimista_sazonal[df_pessimista_sazonal['mes'] == 'Dezembro']
+    fevereiro = df_pessimista_sazonal[df_pessimista_sazonal['mes'] == 'Fevereiro']
     
-    # Visualizar resultados (em ambiente interativo ou salvando a figura)
-    fig = visualizar_resultados_simulacao(df_resultados)
-    # fig.savefig("simulacao_monte_carlo.png")  # Descomentar para salvar a figura
-    # plt.show()  # Descomentar para mostrar a figura em ambiente interativo
+    if not dezembro.empty:
+        print(f"\nDezembro - Receita: R$ {dezembro['receita_total'].iloc[0]:,.2f}")
+        print(f"Dezembro - Fluxo: R$ {dezembro['fluxo_de_caixa'].iloc[0]:,.2f}")
+    
+    if not fevereiro.empty:
+        print(f"Fevereiro - Receita: R$ {fevereiro['receita_total'].iloc[0]:,.2f}")
+        print(f"Fevereiro - Fluxo: R$ {fevereiro['fluxo_de_caixa'].iloc[0]:,.2f}")
+    
+    # Gerar resumo comparativo
+    print("\n--- Resumo Comparativo ---")
+    resumo = generate_scenario_summary(df_exemplo_extended, df_pessimista_sazonal, 'pessimista')
+    print(f"Mudança na Receita: {resumo['percentage_changes']['receita_change']:+.1f}%")
+    print(f"Mudança no Custo: {resumo['percentage_changes']['custo_change']:+.1f}%")
+    print(f"Mudança no Fluxo: {resumo['percentage_changes']['fluxo_change']:+.1f}%")
