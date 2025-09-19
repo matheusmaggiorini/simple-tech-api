@@ -12,7 +12,6 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../.
 
 from api.endpoints import state
 from core.data_processing import processar_dados
-from core.financial_metrics import calcular_prazos_medios
 
 # Criar diretório para uploads se não existir
 if not os.path.exists(state.UPLOAD_DIR):
@@ -70,20 +69,7 @@ async def upload_excel_bundle(file: UploadFile = File(...)):
         state.global_historical_stats = calcular_estatisticas_historicas(df_processed)
         state.global_prediction_model = None  # Reset do modelo quando novos dados são carregados
         state.global_feature_importance = None
-        print("Dados de fluxo de caixa processados e salvos no estado.")
-
-        # --- Processamento da Aba Contábil ---
-        # Posiciona o leitor de volta ao início do arquivo para ler a próxima aba
-        await file.seek(0) 
-        print("Lendo a aba 'DadosContabeis' do arquivo Excel...")
-        df_accounting = pd.read_excel(file.file, sheet_name='DadosContabeis')
-        if df_accounting.empty:
-            raise HTTPException(status_code=400, detail="A aba 'DadosContabeis' está vazia.")
-
-        cycle_metrics = calcular_prazos_medios(df_accounting, periodo_dias=30)
-        state.global_cycle_metrics = cycle_metrics
-        print("Prazos médios calculados e salvos no estado.")
-        
+        print("Dados de fluxo de caixa processados e salvos no estado.")     
         return FileUploadResponse(message="Arquivo Excel processado com sucesso!")
 
     except ValueError as ve:
@@ -105,18 +91,6 @@ async def view_processed_data(limit: int = 50):
         df_copy[col] = df_copy[col].dt.strftime('%Y-%m-%d')
     df_copy = df_copy.replace({np.nan: None})
     return JSONResponse(content=df_copy.to_dict(orient="records"))
-
-
-@router.get("/operational_cycles")
-async def get_operational_cycles():
-    """Retorna os ciclos operacionais calculados que estão no estado global."""
-    if not hasattr(state, 'global_cycle_metrics') or state.global_cycle_metrics is None:
-        raise HTTPException(
-            status_code=404, 
-            detail="Nenhum dado de ciclos operacionais encontrado. Faça o upload do arquivo Excel primeiro."
-        )
-    
-    return JSONResponse(content=state.global_cycle_metrics)
 
 
 @router.get("/statistics")
