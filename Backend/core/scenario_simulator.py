@@ -309,6 +309,56 @@ def create_sample_forecast_data(months: int = 12) -> pd.DataFrame:
 
 # --- SEÇÃO 4: BLOCO DE TESTE ---
 
+# --- Função de Simulação de Empréstimo ---
+def run_loan_simulation(
+    historical_df: pd.DataFrame,
+    amount: float,
+    interest_rate_monthly: float,
+    term_months: int,
+    simulation_months: int = 12
+) -> pd.DataFrame:
+    """
+    Executa uma simulação de fluxo de caixa injetando um empréstimo.
+    """
+    # 1. Projeta o fluxo de caixa base (sem o empréstimo)
+    base_simulation = run_event_simulation(historical_df, [], [], simulation_months)
+    
+    # Converte o 'mes' para datetime para facilitar a manipulação
+    base_simulation['data'] = pd.to_datetime(base_simulation['mes'])
+    base_simulation.set_index('data', inplace=True)
+
+    # 2. Calcula a parcela do empréstimo (Tabela Price)
+    if interest_rate_monthly > 0:
+        rate = interest_rate_monthly / 100
+        installment = (amount * rate) / (1 - (1 + rate)**-term_months)
+    else:
+        installment = amount / term_months if term_months > 0 else 0
+
+    # 3. Injeta o empréstimo na simulação
+    # Adiciona o valor do empréstimo como entrada no primeiro dia
+    if not base_simulation.empty:
+        first_day = base_simulation.index[0]
+        if 'entrada' not in base_simulation.columns:
+            base_simulation['entrada'] = 0.0
+        if 'saida' not in base_simulation.columns:
+            base_simulation['saida'] = 0.0
+        base_simulation.loc[first_day, 'entrada'] += amount
+
+        # Adiciona a parcela como saída recorrente
+        for i in range(min(term_months, simulation_months)):
+            target_month = base_simulation.index[i]
+            base_simulation.loc[target_month, 'saida'] += installment
+    
+    # 4. Recalcula o fluxo e o saldo
+    base_simulation['fluxo_diario'] = base_simulation.get('entrada', 0) - base_simulation.get('saida', 0)
+    last_balance = historical_df['saldo'].iloc[-1] if 'saldo' in historical_df.columns and not historical_df.empty else 0
+    base_simulation['saldo_previsto'] = last_balance + base_simulation['fluxo_diario'].cumsum()
+    
+    base_simulation.reset_index(inplace=True)
+    base_simulation['mes'] = base_simulation['data'].dt.strftime('%Y-%m')
+    
+    return base_simulation
+
 if __name__ == "__main__":
     print("=== TESTE DO SIMULADOR DE CENÁRIOS ===")
     

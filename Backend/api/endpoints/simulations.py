@@ -1,5 +1,5 @@
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel, validator
+from pydantic import BaseModel, field_validator, model_validator
 import pandas as pd
 import numpy as np
 from typing import Dict, Any, Optional, List
@@ -18,7 +18,8 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../.
 # Importar o estado compartilhado e os simuladores de cenários
 from api.endpoints import state
 # Importa AMBAS as funções de simulação do módulo atualizado
-from core.scenario_simulator import run_simulation, run_event_simulation
+from core.scenario_simulator import run_simulation, run_event_simulation, run_loan_simulation
+from core.loan_analyzer import suggest_loan_options
 # Importa a nova função para analisar eventos de negócio
 from core.business_event_analyzer import identify_key_business_events
 
@@ -40,7 +41,7 @@ class EventModifier(BaseModel):
 
 class SimulationRequest(BaseModel):
     """Modelo de requisição unificado para ambos os tipos de simulação."""
-    simulation_type: str = "macroeconomic"  # 'macroeconomic' ou 'event'
+    simulation_type: str = "macroeconomic"  # 'macroeconomic' ou 'event' ou 'loan_impact'
     
     # Parâmetros para simulação macroeconômica
     scenario_type: Optional[str] = None
@@ -50,19 +51,66 @@ class SimulationRequest(BaseModel):
     inflow_modifiers: Optional[List[EventModifier]] = None
     outflow_modifiers: Optional[List[EventModifier]] = None
 
-    @validator('scenario_type', always=True)
-    def validate_scenario_type(cls, v, values):
-        """Valida se o scenario_type foi fornecido para o tipo de simulação correto."""
-        simulation_type = values.get('simulation_type', 'macroeconomic')
-        
-        # Só valida se for simulação macroeconômica
-        if simulation_type == 'macroeconomic':
-            if not v:
+    # Parâmetros para simulação de empréstimo
+    loan_params: Optional['LoanParams'] = None
+
+    @model_validator(mode='after')
+    def validate_macroeconomic_requirements(self):
+        if self.simulation_type == 'macroeconomic':
+            if not self.scenario_type:
                 raise ValueError('scenario_type é obrigatório para a simulação macroeconômica.')
-            if v not in ['otimista', 'conservador', 'pessimista']:
-                raise ValueError(f'Tipo de cenário inválido: {v}. Use otimista, conservador ou pessimista.')
-        
-        return v
+            if self.scenario_type not in ['otimista', 'conservador', 'pessimista']:
+                raise ValueError(f'Tipo de cenário inválido: {self.scenario_type}. Use otimista, conservador ou pessimista.')
+        return self
+
+class LoanParams(BaseModel):
+    amount: float
+    interest_rate_monthly: float
+    term_months: int
+
+    @field_validator('amount', mode='before')
+    def parse_amount(cls, v):
+        if isinstance(v, str):
+            v = v.replace('\u00A0', '').replace(' ', '').replace('.', '').replace(',', '.')
+        try:
+            return float(v)
+        except Exception:
+            raise ValueError('amount inválido')
+
+    @field_validator('interest_rate_monthly', mode='before')
+    def parse_rate(cls, v):
+        if isinstance(v, str):
+            v = v.replace('\u00A0', '').replace(' ', '').replace('.', '').replace(',', '.')
+        try:
+            return float(v)
+        except Exception:
+            raise ValueError('interest_rate_monthly inválido')
+
+    @field_validator('term_months', mode='before')
+    def parse_term(cls, v):
+        if isinstance(v, str):
+            v = v.strip()
+            v = v.replace('\u00A0', '').replace(' ', '')
+            v = v.replace('.', '').replace(',', '.')
+            try:
+                v = float(v)
+            except Exception:
+                raise ValueError('term_months inválido')
+        try:
+            return int(round(v))
+        except Exception:
+            raise ValueError('term_months inválido')
+
+    
+class LoanSimulationResponse(BaseModel):
+    scenario_type: str
+    original_summary: Dict[str, Any]
+    simulated_summary: Dict[str, Any]
+    monthly_details: List[Dict[str, Any]]
+
+class LoanSuggestionResponse(BaseModel):
+    sos_loan: Dict[str, Any]
+    strategic_loan: Dict[str, Any]
 
 class SimulationResponse(BaseModel):
     """Modelo para resposta da simulação."""
@@ -198,6 +246,22 @@ def create_mock_historical_data(days: int = 180) -> pd.DataFrame:
         df['saldo'] = (df['entrada'] - df['saida']).cumsum()
     
     return df
+# --- Novos Endpoints de Empréstimo ---
+
+@router.get("/loan-suggestions")
+async def get_loan_suggestions():
+    try:
+        # Usa dados reais se existirem; caso contrário, usa dados mock
+        if state.global_processed_df is None or state.global_processed_df.empty:
+            historical_df = create_mock_historical_data(180)
+        else:
+            historical_df = state.global_processed_df.copy()
+
+        suggestions = suggest_loan_options(historical_df)
+        return suggestions
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 def validate_historical_data_for_events(df: pd.DataFrame) -> bool:
     """Valida se o DataFrame histórico tem as colunas necessárias para simulação de eventos."""
@@ -249,10 +313,10 @@ async def simulate_scenario(request: SimulationRequest):
         logger.info(f"🔄 Recebida requisição de simulação: {request.simulation_type}")
         
         # Validação inicial do tipo de simulação
-        if request.simulation_type not in ['macroeconomic', 'event']:
+        if request.simulation_type not in ['macroeconomic', 'event', 'loan_impact']:
             raise HTTPException(
                 status_code=400, 
-                detail=f"Tipo de simulação inválido: '{request.simulation_type}'. Use 'macroeconomic' ou 'event'."
+                detail=f"Tipo de simulação inválido: '{request.simulation_type}'. Use 'macroeconomic', 'event' ou 'loan_impact'."
             )
 
         # Para simulação macroeconômica, usa dados mock
@@ -333,6 +397,36 @@ async def simulate_scenario(request: SimulationRequest):
             # Para eventos, usa dados históricos como baseline
             df_original = create_mock_forecast_data(len(df_simulated))
             scenario_name = "event-based"
+
+        elif request.simulation_type == "loan_impact":
+            print("🚀 Executando simulação de Impacto de Empréstimo...")
+            if not hasattr(request, 'loan_params') or request.loan_params is None:
+                raise HTTPException(status_code=400, detail="Parâmetros do empréstimo não fornecidos.")
+
+            # Seleciona dados históricos reais ou mock
+            if state.global_processed_df is None or state.global_processed_df.empty:
+                historical_df = create_mock_historical_data(180)
+            else:
+                historical_df = state.global_processed_df.copy()
+
+            df_simulated_monthly = run_loan_simulation(
+                historical_df=historical_df,
+                amount=request.loan_params.amount,
+                interest_rate_monthly=request.loan_params.interest_rate_monthly,
+                term_months=request.loan_params.term_months
+            )
+
+            # Adaptar para formato padrão
+            df_simulated = pd.DataFrame({
+                "mes": df_simulated_monthly['mes'] if 'mes' in df_simulated_monthly.columns else [f"Mês {i+1}" for i in range(len(df_simulated_monthly))],
+                "receita_total": df_simulated_monthly.get('entrada', pd.Series([0]*len(df_simulated_monthly))),
+                "custo_total": df_simulated_monthly.get('saida', pd.Series([0]*len(df_simulated_monthly))),
+                "fluxo_de_caixa": df_simulated_monthly.get('fluxo_diario', pd.Series([0]*len(df_simulated_monthly)))
+            })
+
+            # baseline mock do mesmo tamanho
+            df_original = create_mock_forecast_data(len(df_simulated))
+            scenario_name = "loan-impact"
 
         # Calcula os resumos e detalhes para a resposta
         logger.info("✅ Simulação executada com sucesso. Calculando resumos...")
