@@ -39,10 +39,10 @@ def check_data_loaded():
         return False
 
 @st.cache_data(ttl=60)
-def get_processed_data(limit=100):
+def get_processed_data(limit=-1):
     """Busca dados processados da API"""
     try:
-        response = requests.get(f"{API_BASE_URL}/api/data/view_processed?limit={limit}", timeout=15)
+        response = requests.get(f"{API_BASE_URL}/api/data/view_processed?limit={limit}", timeout=30)
         
         if response.status_code == 200:
             data = response.json()
@@ -206,9 +206,14 @@ try:
         st.metric("Saldo Atual", f"R$ {saldo_atual:,.2f}")
 
     with col4:
-        fluxo_liquido = total_entrada - total_saida
+        # Fluxo líquido: soma diária de (entrada - saída). Fallback para totals.
+        if 'fluxo_diario' in df_data.columns:
+            fluxo_liquido = pd.to_numeric(df_data['fluxo_diario'], errors='coerce').fillna(0).sum()
+        else:
+            fluxo_liquido = (pd.to_numeric(df_data['entrada'], errors='coerce').fillna(0) -
+                             pd.to_numeric(df_data['saida'], errors='coerce').fillna(0)).sum()
         delta_color = "normal" if fluxo_liquido >= 0 else "inverse"
-        st.metric("Fluxo Líquido", f"R$ {fluxo_liquido:,.2f}", 
+        st.metric("Fluxo de Caixa Líquido", f"R$ {fluxo_liquido:,.2f}", 
                   delta=f"R$ {fluxo_liquido:,.2f}")
 
 except Exception as e:
@@ -237,13 +242,28 @@ try:
         st.subheader("💰 Entradas vs Saídas")
         
         if len(df_data) > 0:
-            # Agrupar por mês para melhor visualização
-            df_data['periodo'] = df_data['data'].dt.to_period('M')
-            df_monthly = df_data.groupby('periodo').agg({
-                'entrada': 'sum',
-                'saida': 'sum'
-            }).reset_index()
-            df_monthly['periodo_str'] = df_monthly['periodo'].astype(str)
+            # Preferir resumo mensal vindo do backend (evita divergências)
+            try:
+                resp = requests.get(f"{API_BASE_URL}/api/data/monthly_summary", timeout=15)
+                if resp.status_code == 200:
+                    monthly_json = resp.json()
+                    df_monthly = pd.DataFrame(monthly_json)
+                    df_monthly['periodo_str'] = df_monthly['ano_mes']
+                else:
+                    # Fallback local
+                    df_data['periodo'] = df_data['data'].dt.to_period('M')
+                    df_monthly = df_data.groupby('periodo').agg({
+                        'entrada': 'sum',
+                        'saida': 'sum'
+                    }).reset_index()
+                    df_monthly['periodo_str'] = df_monthly['periodo'].astype(str)
+            except Exception:
+                df_data['periodo'] = df_data['data'].dt.to_period('M')
+                df_monthly = df_data.groupby('periodo').agg({
+                    'entrada': 'sum',
+                    'saida': 'sum'
+                }).reset_index()
+                df_monthly['periodo_str'] = df_monthly['periodo'].astype(str)
             
             fig_bars = go.Figure()
             fig_bars.add_trace(go.Bar(name='Entradas', x=df_monthly['periodo_str'], 
@@ -257,6 +277,15 @@ try:
                 yaxis_title="Valor (R$)"
             )
             st.plotly_chart(fig_bars, use_container_width=True)
+            with st.expander("Debug: Tabela mensal calculada"):
+                st.write(df_monthly[['periodo_str', 'entrada', 'saida']].head(24))
+                st.caption("A soma abaixo deve bater com as métricas principais")
+                st.write({
+                    'soma_entradas_mensal': float(pd.to_numeric(df_monthly['entrada'], errors='coerce').fillna(0).sum()),
+                    'soma_saidas_mensal': float(pd.to_numeric(df_monthly['saida'], errors='coerce').fillna(0).sum()),
+                    'soma_entradas_raw': float(pd.to_numeric(df_data['entrada'], errors='coerce').fillna(0).sum()),
+                    'soma_saidas_raw': float(pd.to_numeric(df_data['saida'], errors='coerce').fillna(0).sum()),
+                })
         else:
             st.info("Sem dados suficientes para gráfico mensal")
 
