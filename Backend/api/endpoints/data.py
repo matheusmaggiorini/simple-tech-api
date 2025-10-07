@@ -27,6 +27,8 @@ def calcular_estatisticas_historicas(df: pd.DataFrame) -> Dict[str, Any]:
     if df.empty: return {}
     if "fluxo_diario" not in df.columns: df["fluxo_diario"] = df["entrada"] - df["saida"]
     stats = {
+        "total_entradas": df["entrada"].sum(),
+        "total_saidas": df["saida"].sum(),
         "media_entrada": df["entrada"].mean(),
         "media_saida": df["saida"].mean(),
         "desvio_padrao_entrada": df["entrada"].std(),
@@ -34,43 +36,116 @@ def calcular_estatisticas_historicas(df: pd.DataFrame) -> Dict[str, Any]:
         "media_fluxo": df["fluxo_diario"].mean(),
         "desvio_padrao_fluxo": df["fluxo_diario"].std(),
         "ultimo_saldo": df["saldo"].iloc[-1] if "saldo" in df.columns and not df.empty else 0.0,
+        "data_atualizacao": pd.Timestamp.utcnow().isoformat(),
     }
     return {key: (float(value) if isinstance(value, (np.number, np.float64)) else value) for key, value in stats.items()}
 
-# --- ENDPOINT INTELIGENTE PARA UPLOAD DE EXCEL ---
+def _read_any_cashflow_table(upload: UploadFile) -> pd.DataFrame:
+    """Lê uma planilha enviada (xlsx/xls/csv) e retorna um DataFrame com
+    as colunas referentes a fluxo de caixa. Tenta ser tolerante a variações:
+    - .xlsx/.xls: tenta a aba 'FluxoDeCaixa'; se não existir, usa a primeira aba
+    - .csv: detecta separador automaticamente
+    - corrige coluna 'Unnamed: 0' -> 'data'
+    """
+    filename = upload.filename or "arquivo_sem_nome"
+    lower = filename.lower()
+
+    if lower.endswith('.csv'):
+        # Tenta separadores comuns; usa o primeiro que gerar colunas > 1
+        upload.file.seek(0)
+        for sep in [';', ',', '\t', '|']:
+            upload.file.seek(0)
+            try:
+                df_csv = pd.read_csv(upload.file, sep=sep)
+                if df_csv.shape[1] > 1:
+                    break
+            except Exception:
+                continue
+        else:
+            # Último recurso sem separador
+            upload.file.seek(0)
+            df_csv = pd.read_csv(upload.file)
+        df = df_csv
+    else:
+        # Excel: tenta aba específica e depois a primeira
+        upload.file.seek(0)
+        try:
+            df = pd.read_excel(upload.file, sheet_name='FluxoDeCaixa')
+        except Exception:
+            upload.file.seek(0)
+            # Lê a primeira aba disponível
+            xls = pd.ExcelFile(upload.file)
+            first_sheet = xls.sheet_names[0]
+            upload.file.seek(0)
+            df = pd.read_excel(upload.file, sheet_name=first_sheet)
+
+    # Normalizações de colunas
+    if 'Unnamed: 0' in df.columns:
+        df.rename(columns={'Unnamed: 0': 'data'}, inplace=True)
+    # Tenta padronizar nomes comuns
+    df.columns = [str(c).strip() for c in df.columns]
+    possible_data = [c for c in df.columns if c.lower() in ['data', 'date']]
+    if 'data' not in df.columns and possible_data:
+        df.rename(columns={possible_data[0]: 'data'}, inplace=True)
+
+    possible_desc = [c for c in df.columns if c.lower() in ['descricao', 'descrição', 'description', 'historico', 'histórico']]
+    if 'descricao' not in df.columns and possible_desc:
+        df.rename(columns={possible_desc[0]: 'descricao'}, inplace=True)
+
+    # Tenta localizar colunas de entrada/saída por nomes comuns
+    def _rename_first(candidates, target):
+        for c in df.columns:
+            if str(c).lower() in candidates:
+                if target not in df.columns:
+                    df.rename(columns={c: target}, inplace=True)
+                break
+
+    _rename_first({'entrada', 'entradas', 'receita', 'receitas', 'recebimento', 'recebimentos', 'inflow', 'creditos', 'créditos', 'credito', 'crédito'}, 'entrada')
+    _rename_first({'saida', 'saída', 'saidas', 'saídas', 'despesa', 'despesas', 'pagamento', 'pagamentos', 'outflow', 'debito', 'débitos', 'débito', 'debitos'}, 'saida')
+
+    return df
+
+
+# --- ENDPOINT TOLERANTE PARA UPLOAD DE ARQUIVOS ---
 @router.post("/upload_excel_bundle", response_model=FileUploadResponse)
-async def upload_excel_bundle(file: UploadFile = File(...)):
+async def upload_excel_bundle(file: UploadFile | None = File(None), files: list[UploadFile] | None = File(None)):
     """
-    Recebe UM ÚNICO arquivo Excel (.xlsx) com duas abas: 'FluxoDeCaixa' e 'DadosContabeis'.
-    Processa ambas as abas e armazena todos os resultados no estado global.
+    Aceita:
+    - Um único arquivo (campo 'file') OU múltiplos (campo 'files').
+    - Excel (.xlsx/.xls) com ou sem a aba 'FluxoDeCaixa'. Se não existir, usa a primeira aba.
+    - CSV com diferentes separadores. Se houver apenas uma planilha, assume que entradas e saídas estão nela.
+    Consolida tudo e processa.
     """
-    if not file.filename.endswith('.xlsx'):
-        raise HTTPException(status_code=400, detail="O arquivo deve ser do tipo Excel (.xlsx)")
+    uploads: list[UploadFile] = []
+    if files and len(files) > 0:
+        uploads = files
+    elif file is not None:
+        uploads = [file]
+    else:
+        raise HTTPException(status_code=400, detail="Nenhum arquivo enviado.")
 
     try:
-        # --- Processamento da Aba de Fluxo de Caixa ---
-        print("Lendo a aba 'FluxoDeCaixa' do arquivo Excel...")
-        df_raw_cashflow = pd.read_excel(file.file, sheet_name='FluxoDeCaixa')
-        
-        # Diagnóstico e correção de colunas
-        print("Colunas originais lidas do Excel:", df_raw_cashflow.columns.tolist())
+        dataframes: list[pd.DataFrame] = []
+        for up in uploads:
+            print(f"Processando arquivo recebido: {up.filename}")
+            df_single = _read_any_cashflow_table(up)
+            print("Colunas lidas:", df_single.columns.tolist())
+            dataframes.append(df_single)
 
-        # Renomear a coluna problemática de 'Unnamed: 0' para 'data'
-        if 'Unnamed: 0' in df_raw_cashflow.columns:
-            df_raw_cashflow.rename(columns={'Unnamed: 0': 'data'}, inplace=True)
-            print("Coluna 'Unnamed: 0' foi renomeada para 'data'.")
-      
-        print("Colunas Finais:", df_raw_cashflow.columns.tolist())
-        if df_raw_cashflow.empty:
-            raise HTTPException(status_code=400, detail="A aba 'FluxoDeCaixa' está vazia.")
-        
-        df_processed = processar_dados(df_raw_cashflow)
+        if not dataframes:
+            raise HTTPException(status_code=400, detail="Nenhuma tabela de dados foi extraída dos arquivos enviados.")
+
+        df_concat = pd.concat(dataframes, ignore_index=True)
+        if df_concat.empty:
+            raise HTTPException(status_code=400, detail="Os arquivos enviados não contêm dados.")
+
+        df_processed = processar_dados(df_concat)
         state.global_processed_df = df_processed
         state.global_historical_stats = calcular_estatisticas_historicas(df_processed)
-        state.global_prediction_model = None  # Reset do modelo quando novos dados são carregados
+        state.global_prediction_model = None
         state.global_feature_importance = None
-        print("Dados de fluxo de caixa processados e salvos no estado.")     
-        return FileUploadResponse(message="Arquivo Excel processado com sucesso!")
+        print("Dados de fluxo de caixa processados e salvos no estado.")
+        return FileUploadResponse(message="Arquivo(s) processado(s) com sucesso!")
 
     except ValueError as ve:
         raise HTTPException(status_code=400, detail=str(ve))

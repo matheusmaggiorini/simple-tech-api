@@ -44,10 +44,25 @@ def processar_dados(df: pd.DataFrame) -> pd.DataFrame:
 
     df['data'] = pd.to_datetime(df['data'], errors='coerce')
     df.dropna(subset=['data'], inplace=True)
+    def normalizar_valores_monetarios(serie):
+        serie_str = serie.astype(str)
+        # Remove moeda, espaços e qualquer caractere que não seja dígito, vírgula, ponto ou sinal
+        serie_str = serie_str.str.replace(r'[^0-9,.-]', '', regex=True)
+        # Heurística: se tiver ponto e vírgula, ponto é milhar e vírgula é decimal
+        tem_ponto = serie_str.str.contains('\.', regex=False)
+        tem_virgula = serie_str.str.contains(',', regex=False)
+        ambos = tem_ponto & tem_virgula
+        serie_str = serie_str.where(~ambos, serie_str.str.replace('.', '', regex=False))
+        serie_str = serie_str.where(~ambos, serie_str.str.replace(',', '.', regex=False))
+        # Apenas vírgula -> decimal brasileiro
+        somente_virgula = ~tem_ponto & tem_virgula
+        serie_str = serie_str.where(~somente_virgula, serie_str.str.replace(',', '.', regex=False))
+        # Demais casos mantêm como está
+        return pd.to_numeric(serie_str, errors='coerce').fillna(0)
+
     for col in ['entrada', 'saida']:
         if col in df.columns:
-            # Força a conversão para string antes de qualquer operação
-            df[col] = pd.to_numeric(df[col].astype(str).str.replace(',', '.', regex=False), errors='coerce').fillna(0)
+            df[col] = normalizar_valores_monetarios(df[col])
     if 'entrada' not in df.columns: df['entrada'] = 0
     if 'saida' not in df.columns: df['saida'] = 0
 
