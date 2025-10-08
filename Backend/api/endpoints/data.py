@@ -51,34 +51,61 @@ def _read_any_cashflow_table(upload: UploadFile, treat_outflow_layout: bool = Fa
     filename = upload.filename or "arquivo_sem nome"
     lower = filename.lower()
 
-    if lower.endswith('.csv'):
-        # Tenta separadores comuns; usa o primeiro que gerar colunas > 1
-        upload.file.seek(0)
-        for sep in [';', ',', '\t', '|']:
+    try:
+        if lower.endswith('.csv'):
+            # Tenta separadores comuns; usa o primeiro que gerar colunas > 1
+            upload.file.seek(0)
+            df = None
+            for sep in [';', ',', '\t', '|']:
+                upload.file.seek(0)
+                try:
+                    df_csv = pd.read_csv(upload.file, sep=sep, encoding='utf-8')
+                    if df_csv.shape[1] > 1:
+                        df = df_csv
+                        break
+                except UnicodeDecodeError:
+                    # Tenta com encoding latin-1 se utf-8 falhar
+                    upload.file.seek(0)
+                    try:
+                        df_csv = pd.read_csv(upload.file, sep=sep, encoding='latin-1')
+                        if df_csv.shape[1] > 1:
+                            df = df_csv
+                            break
+                    except Exception:
+                        continue
+                except Exception:
+                    continue
+            
+            if df is None:
+                # Último recurso sem separador
+                upload.file.seek(0)
+                try:
+                    df = pd.read_csv(upload.file, encoding='utf-8')
+                except UnicodeDecodeError:
+                    upload.file.seek(0)
+                    df = pd.read_csv(upload.file, encoding='latin-1')
+        else:
+            # Excel: tenta aba específica e depois a primeira
             upload.file.seek(0)
             try:
-                df_csv = pd.read_csv(upload.file, sep=sep)
-                if df_csv.shape[1] > 1:
-                    break
+                df = pd.read_excel(upload.file, sheet_name='FluxoDeCaixa')
             except Exception:
-                continue
-        else:
-            # Último recurso sem separador
-            upload.file.seek(0)
-            df_csv = pd.read_csv(upload.file)
-        df = df_csv
-    else:
-        # Excel: tenta aba específica e depois a primeira
-        upload.file.seek(0)
-        try:
-            df = pd.read_excel(upload.file, sheet_name='FluxoDeCaixa')
-        except Exception:
-            upload.file.seek(0)
-            # Lê a primeira aba disponível
-            xls = pd.ExcelFile(upload.file)
-            first_sheet = xls.sheet_names[0]
-            upload.file.seek(0)
-            df = pd.read_excel(upload.file, sheet_name=first_sheet)
+                upload.file.seek(0)
+                # Lê a primeira aba disponível
+                xls = pd.ExcelFile(upload.file)
+                if not xls.sheet_names:
+                    raise ValueError(f"Arquivo {filename} não contém abas válidas")
+                first_sheet = xls.sheet_names[0]
+                upload.file.seek(0)
+                df = pd.read_excel(upload.file, sheet_name=first_sheet)
+                
+        # Verifica se o DataFrame está vazio
+        if df.empty:
+            raise ValueError(f"Arquivo {filename} está vazio ou não contém dados válidos")
+            
+    except Exception as e:
+        print(f"[ERROR] Erro ao ler arquivo {filename}: {str(e)}")
+        raise ValueError(f"Erro ao ler arquivo {filename}: {str(e)}")
 
     # Normalizações de colunas
     if 'Unnamed: 0' in df.columns:
@@ -90,6 +117,9 @@ def _read_any_cashflow_table(upload: UploadFile, treat_outflow_layout: bool = Fa
     possible_data = [c for c in df.columns if c.lower() in ['data', 'date']]
     if 'data' not in df.columns and possible_data:
         df.rename(columns={possible_data[0]: 'data'}, inplace=True)
+    
+    # Normaliza colunas para minúsculo para processamento consistente
+    df.columns = [str(c).strip().lower() for c in df.columns]
 
     possible_desc = [c for c in df.columns if c.lower() in ['descricao', 'descrição', 'description', 'historico', 'histórico']]
     if 'descricao' not in df.columns and possible_desc:
@@ -112,25 +142,46 @@ def _read_any_cashflow_table(upload: UploadFile, treat_outflow_layout: bool = Fa
         if ('data' in lower_to_original or 'data' in df.columns) and headers_lower.count('valor') >= 1:
             valor_cols = [c for c in df.columns if str(c).strip().lower() == 'valor']
             valor_col = valor_cols[-1]
+            
+            # Processa valores monetários brasileiros (R$ X.XXX,XX)
             serie = df[valor_col].astype(str)
+            # Remove R$ e espaços, mantém apenas números, pontos, vírgulas e hífens
             serie = serie.str.replace(r'[^0-9,.-]', '', regex=True)
+            # Remove pontos (milhares) e substitui vírgula por ponto (decimal)
             serie = serie.str.replace('.', '', regex=False).str.replace(',', '.', regex=False)
             df['saida'] = pd.to_numeric(serie, errors='coerce').fillna(0)
-            # descrição: coluna 'SAIDA' (quando presente no card 2)
-            saida_desc_col = lower_to_original.get('saida')
+            
+            # descrição: procura por colunas de descrição (SAIDA, FORMA, etc.)
+            saida_desc_col = None
+            # Tenta encontrar coluna de descrição por nomes comuns
+            for desc_name in ['saida', 'forma', 'descricao', 'descrição', 'fornecedor', 'cliente']:
+                if desc_name in lower_to_original:
+                    saida_desc_col = lower_to_original[desc_name]
+                    break
+            
+            # Se não encontrou, tenta a coluna anterior ao VALOR
             if saida_desc_col is None:
                 try:
                     idx = list(df.columns).index(valor_col)
                     saida_desc_col = list(df.columns)[idx - 1] if idx - 1 >= 0 else None
                 except Exception:
                     saida_desc_col = None
-            df['descricao'] = df[saida_desc_col].astype(str) if saida_desc_col else ''
-            # normaliza data
-            data_col = lower_to_original.get('data', 'data')
-            if pd.api.types.is_integer_dtype(df[data_col]) or pd.api.types.is_float_dtype(df[data_col]):
-                df['data'] = pd.to_datetime(df[data_col], origin='1899-12-30', unit='D', errors='coerce')
+            
+            # Verifica se a coluna existe antes de usar
+            if saida_desc_col and saida_desc_col in df.columns:
+                df['descricao'] = df[saida_desc_col].astype(str)
             else:
-                df['data'] = pd.to_datetime(df[data_col], errors='coerce', dayfirst=True)
+                df['descricao'] = ''
+            
+            # normaliza data - formato DD/M (sem ano)
+            if 'data' in df.columns:
+                # Converte para string primeiro para processar formato DD/M
+                df['data'] = df['data'].astype(str)
+                # Adiciona ano atual se não estiver presente
+                current_year = pd.Timestamp.now().year
+                df['data'] = df['data'].apply(lambda x: f"{x}/{current_year}" if '/' in x and len(x.split('/')) == 2 else x)
+                df['data'] = pd.to_datetime(df['data'], errors='coerce', dayfirst=True)
+            
             # manter apenas linhas com saida > 0 e que não sejam completamente vazias
             df = df[pd.to_numeric(df['saida'], errors='coerce').fillna(0) > 0].copy()
             # Remover linhas completamente vazias (todas as colunas são NaN ou vazias)
@@ -138,13 +189,88 @@ def _read_any_cashflow_table(upload: UploadFile, treat_outflow_layout: bool = Fa
             
             # Verificar se ainda há dados válidos após a limpeza
             if df.empty:
-                raise ValueError(f"Arquivo {filename} não contém dados válidos após processamento.")
+                print(f"[WARNING] Arquivo {filename} está vazio após processamento - retornando DataFrame vazio")
+                # Retorna DataFrame vazio com estrutura correta em vez de erro
+                empty_df = pd.DataFrame(columns=['data', 'saida', 'descricao', 'entrada'])
+                return empty_df
             
             df['entrada'] = 0.0
             try:
                 print('[OUTFLOW DETECT]', filename, 'linhas:', len(df), 'saida_sum:', float(df['saida'].sum()))
             except Exception:
                 pass
+            return df
+    
+    # Detecção automática de arquivos de saída por nome
+    is_outflow_by_name = filename and any(keyword in filename.lower() for keyword in [
+        'saida', 'saída', 'fevereiro', 'janeiro', 'março', 'abril', 'maio', 'junho', 
+        'julho', 'agosto', 'setembro', 'outubro', 'novembro', 'dezembro', 'cópia', 'copy'
+    ])
+    
+    # Detecção automática por estrutura (DATA + VALOR sem ENTRADA)
+    has_data_and_valor = ('data' in df.columns) and any('valor' == c for c in df.columns)
+    has_entrada_col = 'entrada' in df.columns
+    has_saida_col = 'saida' in df.columns
+    
+    if (is_outflow_by_name or (has_data_and_valor and not has_entrada_col and not has_saida_col)) and not treat_outflow_layout:
+        print(f"[DEBUG] Detectado arquivo de saída por nome/estrutura: {filename}")
+        # Aplica o mesmo tratamento de saída
+        headers_lower = [str(h).lower().strip() for h in df.columns]
+        if ('data' in lower_to_original or 'data' in df.columns) and headers_lower.count('valor') >= 1:
+            valor_cols = [c for c in df.columns if str(c).strip().lower() == 'valor']
+            valor_col = valor_cols[-1]
+            
+            # Processa valores monetários brasileiros (R$ X.XXX,XX)
+            serie = df[valor_col].astype(str)
+            # Remove R$ e espaços, mantém apenas números, pontos, vírgulas e hífens
+            serie = serie.str.replace(r'[^0-9,.-]', '', regex=True)
+            # Remove pontos (milhares) e substitui vírgula por ponto (decimal)
+            serie = serie.str.replace('.', '', regex=False).str.replace(',', '.', regex=False)
+            df['saida'] = pd.to_numeric(serie, errors='coerce').fillna(0)
+            
+            # descrição: procura por colunas de descrição (SAIDA, FORMA, etc.)
+            saida_desc_col = None
+            # Tenta encontrar coluna de descrição por nomes comuns
+            for desc_name in ['saida', 'forma', 'descricao', 'descrição', 'fornecedor', 'cliente']:
+                if desc_name in lower_to_original:
+                    saida_desc_col = lower_to_original[desc_name]
+                    break
+            
+            # Se não encontrou, tenta a coluna anterior ao VALOR
+            if saida_desc_col is None:
+                try:
+                    idx = list(df.columns).index(valor_col)
+                    saida_desc_col = list(df.columns)[idx - 1] if idx - 1 >= 0 else None
+                except Exception:
+                    saida_desc_col = None
+            
+            # Verifica se a coluna existe antes de usar
+            if saida_desc_col and saida_desc_col in df.columns:
+                df['descricao'] = df[saida_desc_col].astype(str)
+            else:
+                df['descricao'] = ''
+            
+            # normaliza data - formato DD/M (sem ano)
+            if 'data' in df.columns:
+                # Converte para string primeiro para processar formato DD/M
+                df['data'] = df['data'].astype(str)
+                # Adiciona ano atual se não estiver presente
+                current_year = pd.Timestamp.now().year
+                df['data'] = df['data'].apply(lambda x: f"{x}/{current_year}" if '/' in x and len(x.split('/')) == 2 else x)
+                df['data'] = pd.to_datetime(df['data'], errors='coerce', dayfirst=True)
+            
+            # manter apenas linhas com saida > 0
+            df = df[pd.to_numeric(df['saida'], errors='coerce').fillna(0) > 0].copy()
+            df = df.dropna(how='all').copy()
+            
+            if df.empty:
+                print(f"[WARNING] Arquivo {filename} está vazio após processamento - retornando DataFrame vazio")
+                # Retorna DataFrame vazio com estrutura correta em vez de erro
+                empty_df = pd.DataFrame(columns=['data', 'saida', 'descricao', 'entrada'])
+                return empty_df
+            
+            df['entrada'] = 0.0
+            print(f'[AUTO-OUTFLOW DETECT] {filename} - linhas: {len(df)}, saida_sum: {float(df["saida"].sum()):.2f}')
             return df
 
     # Heurística específica: planilhas de ENTRADA onde o valor está em uma coluna de total pago/recebido
@@ -167,7 +293,7 @@ def _read_any_cashflow_table(upload: UploadFile, treat_outflow_layout: bool = Fa
         # Remove qualquer caractere não numérico relevante
         serie = serie.str.replace(r'[^0-9,.-]', '', regex=True)
         # Se houver ponto e vírgula, trata ponto como milhar e vírgula como decimal
-        tem_ponto = serie.str.contains('\.', regex=False)
+        tem_ponto = serie.str.contains(r'\.', regex=False)
         tem_virgula = serie.str.contains(',', regex=False)
         ambos = tem_ponto & tem_virgula
         serie = serie.where(~ambos, serie.str.replace('.', '', regex=False))
@@ -201,45 +327,144 @@ async def upload_excel_bundle(file: UploadFile | None = File(None), files: list[
 
     try:
         dataframes: list[pd.DataFrame] = []
+        filenames: list[str] = []
+        
         for up in uploads:
             print(f"Processando arquivo recebido: {up.filename}")
-            df_single = _read_any_cashflow_table(up, treat_outflow_layout=bool(has_outflow))
-            print("Colunas lidas:", df_single.columns.tolist())
-            dataframes.append(df_single)
+            try:
+                # Verifica se o arquivo não está vazio
+                if up.size == 0:
+                    print(f"[WARNING] Arquivo {up.filename} está vazio - pulando")
+                    continue
+                
+                # Detecta automaticamente se é arquivo de saída baseado no nome
+                filename_lower = (up.filename or "").lower()
+                is_outflow_file = any(keyword in filename_lower for keyword in [
+                    'saida', 'saída', 'fevereiro', 'janeiro', 'março', 'abril', 'maio', 'junho', 
+                    'julho', 'agosto', 'setembro', 'outubro', 'novembro', 'dezembro', 'cópia'
+                ])
+                
+                # Usa detecção automática ou o parâmetro has_outflow
+                treat_as_outflow = is_outflow_file or bool(has_outflow)
+                print(f"[DEBUG] Arquivo {up.filename} - tratado como saída: {treat_as_outflow}")
+                
+                df_single = _read_any_cashflow_table(up, treat_outflow_layout=treat_as_outflow)
+                print("Colunas lidas:", df_single.columns.tolist())
+                
+                # Verifica se o DataFrame não está vazio
+                if df_single.empty:
+                    print(f"[WARNING] Arquivo {up.filename} resultou em DataFrame vazio - pulando")
+                    continue
+                    
+                dataframes.append(df_single)
+                filenames.append(up.filename or "arquivo_sem_nome")
+                
+            except Exception as e:
+                print(f"[ERROR] Erro ao ler arquivo {up.filename}: {str(e)}")
+                # Continua processando outros arquivos mesmo se um falhar
+                continue
 
         if not dataframes:
             raise HTTPException(status_code=400, detail="Nenhuma tabela de dados foi extraída dos arquivos enviados.")
 
-        df_concat = pd.concat(dataframes, ignore_index=True)
-        if df_concat.empty:
-            raise HTTPException(status_code=400, detail="Os arquivos enviados não contêm dados.")
+        # Processa cada arquivo individualmente para detectar corretamente entrada/saída
+        processed_dataframes: list[pd.DataFrame] = []
+        for i, (df, filename) in enumerate(zip(dataframes, filenames)):
+            print(f"[DEBUG] Processando arquivo {i+1}/{len(dataframes)}: {filename}")
+            print(f"[DEBUG] Colunas antes do processamento: {list(df.columns)}")
+            try:
+                df_processed = processar_dados(df, filename)
+                # Só adiciona se o DataFrame não estiver vazio
+                if not df_processed.empty:
+                    processed_dataframes.append(df_processed)
+                    entradas = df_processed.get('entrada', pd.Series([0])).sum()
+                    saidas = df_processed.get('saida', pd.Series([0])).sum()
+                    print(f"[DEBUG] Arquivo {filename} - Entradas: {entradas:.2f}, Saídas: {saidas:.2f}")
+                    print(f"[DEBUG] Colunas após processamento: {list(df_processed.columns)}")
+                else:
+                    print(f"[DEBUG] Arquivo {filename} está vazio - pulando")
+            except Exception as e:
+                print(f"[DEBUG] Erro ao processar {filename}: {e}")
+                # Se é um arquivo vazio, continua sem erro
+                if "não contém dados válidos" in str(e).lower() or "vazio" in str(e).lower():
+                    print(f"[DEBUG] Arquivo {filename} vazio - continuando")
+                    continue
+                else:
+                    # Para outros erros, também continua processando outros arquivos
+                    print(f"[WARNING] Erro no arquivo {filename}, continuando com outros arquivos")
+                    continue
 
-        df_processed = processar_dados(df_concat)
-        # DEBUG: sumarização rápida para diagnosticar zeros
+        if not processed_dataframes:
+            raise HTTPException(status_code=400, detail="Nenhum arquivo contém dados válidos para processamento.")
+        
         try:
-            total_e = float(pd.to_numeric(df_processed.get('entrada', 0), errors='coerce').fillna(0).sum())
-            total_s = float(pd.to_numeric(df_processed.get('saida', 0), errors='coerce').fillna(0).sum())
-            qtd_e_pos = int((pd.to_numeric(df_processed.get('entrada', 0), errors='coerce') > 0).sum())
-            print("[DEBUG] Total entrada:", total_e, "Total saída:", total_s, "Qtd entradas > 0:", qtd_e_pos)
-            if 'data' in df_processed.columns:
-                tmp = df_processed.copy()
-                tmp['ano_mes'] = tmp['data'].dt.to_period('M')
-                resumo = tmp.groupby('ano_mes').agg(entrada=('entrada', 'sum'), saida=('saida', 'sum')).head(12)
-                print("[DEBUG] Entradas/Saídas por mês (primeiros 12):\n", resumo)
-        except Exception as _:
-            pass
-        state.global_processed_df = df_processed
-        state.global_historical_stats = calcular_estatisticas_historicas(df_processed)
-        state.global_prediction_model = None
-        state.global_feature_importance = None
-        print("Dados de fluxo de caixa processados e salvos no estado.")
-        return FileUploadResponse(message="Arquivo(s) processado(s) com sucesso!")
+            print(f"[DEBUG] Concatenando {len(processed_dataframes)} DataFrames processados")
+            df_concat = pd.concat(processed_dataframes, ignore_index=True)
+            print(f"[DEBUG] DataFrame concatenado - Linhas: {len(df_concat)}, Colunas: {list(df_concat.columns)}")
+            
+            if df_concat.empty:
+                raise HTTPException(status_code=400, detail="Os arquivos enviados não contêm dados.")
+
+            # Aplica processamento final para consolidar dados
+            print("[DEBUG] Aplicando processamento final de consolidação...")
+            # NÃO chama processar_dados novamente, pois os dados já foram processados individualmente
+            # Apenas garante que as colunas essenciais existam
+            df_processed = df_concat.copy()
+            
+            # Garante que as colunas essenciais existam
+            if 'entrada' not in df_processed.columns:
+                df_processed['entrada'] = 0.0
+            if 'saida' not in df_processed.columns:
+                df_processed['saida'] = 0.0
+            if 'fluxo_diario' not in df_processed.columns:
+                df_processed['fluxo_diario'] = df_processed['entrada'] - df_processed['saida']
+            if 'saldo' not in df_processed.columns:
+                df_processed['saldo'] = df_processed['fluxo_diario'].cumsum()
+            
+            print(f"[DEBUG] Após consolidação final - Linhas: {len(df_processed)}, Colunas: {list(df_processed.columns)}")
+            
+            # DEBUG: sumarização rápida para diagnosticar zeros
+            try:
+                total_e = float(pd.to_numeric(df_processed.get('entrada', 0), errors='coerce').fillna(0).sum())
+                total_s = float(pd.to_numeric(df_processed.get('saida', 0), errors='coerce').fillna(0).sum())
+                qtd_e_pos = int((pd.to_numeric(df_processed.get('entrada', 0), errors='coerce') > 0).sum())
+                qtd_s_pos = int((pd.to_numeric(df_processed.get('saida', 0), errors='coerce') > 0).sum())
+                print("[DEBUG] RESUMO FINAL:")
+                print(f"[DEBUG] Total entrada: {total_e:.2f}")
+                print(f"[DEBUG] Total saída: {total_s:.2f}")
+                print(f"[DEBUG] Qtd entradas > 0: {qtd_e_pos}")
+                print(f"[DEBUG] Qtd saídas > 0: {qtd_s_pos}")
+                
+                if 'data' in df_processed.columns:
+                    tmp = df_processed.copy()
+                    tmp['ano_mes'] = tmp['data'].dt.to_period('M')
+                    resumo = tmp.groupby('ano_mes').agg(entrada=('entrada', 'sum'), saida=('saida', 'sum')).head(12)
+                    print("[DEBUG] Entradas/Saídas por mês (primeiros 12):\n", resumo)
+            except Exception as _:
+                pass
+                
+            state.global_processed_df = df_processed
+            state.global_historical_stats = calcular_estatisticas_historicas(df_processed)
+            state.global_prediction_model = None
+            state.global_feature_importance = None
+            print("Dados de fluxo de caixa processados e salvos no estado.")
+            return FileUploadResponse(message="Arquivo(s) processado(s) com sucesso!")
+            
+        except Exception as concat_error:
+            print(f"[ERROR] Erro ao concatenar DataFrames: {str(concat_error)}")
+            raise HTTPException(status_code=500, detail=f"Erro ao processar dados: {str(concat_error)}")
 
     except ValueError as ve:
+        print(f"[ERROR] ValueError: {str(ve)}")
         raise HTTPException(status_code=400, detail=str(ve))
+    except HTTPException:
+        # Re-raise HTTPException para manter o status code correto
+        raise
     except Exception as e:
         import traceback
-        print(traceback.format_exc())
+        error_trace = traceback.format_exc()
+        print(f"[ERROR] Erro interno: {str(e)}")
+        print(f"[ERROR] Traceback: {error_trace}")
         return JSONResponse(status_code=500, content={"message": "Erro interno do servidor", "error": str(e)})
 
 

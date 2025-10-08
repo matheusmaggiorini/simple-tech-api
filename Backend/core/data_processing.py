@@ -39,7 +39,7 @@ def categorizar_por_regras(descricao):
     
     return 'outros'
 
-def processar_dados(df: pd.DataFrame) -> pd.DataFrame:
+def processar_dados(df: pd.DataFrame, filename: str = None) -> pd.DataFrame:
     df.columns = df.columns.str.lower().str.replace(' ', '_')
 
     # Detecta formato específico de planilha de ENTRADAS (Exportar) e pré-processa
@@ -47,20 +47,45 @@ def processar_dados(df: pd.DataFrame) -> pd.DataFrame:
     has_numeric_excel_date = 'data' in df.columns and (
         pd.api.types.is_integer_dtype(df['data']) or pd.api.types.is_float_dtype(df['data'])
     )
-    if has_valor_pago_col or has_numeric_excel_date:
+    # Detecta arquivos de entrada por nome também
+    is_inflow_by_name = filename and any(keyword in filename.lower() for keyword in ['entrada', 'entradas', 'receita', 'receitas', 'venda', 'vendas'])
+    
+    if has_valor_pago_col or has_numeric_excel_date or is_inflow_by_name:
         try:
+            print(f"[DEBUG] Processando como arquivo de ENTRADA: {filename}")
             df = process_inflow_file(df)
-        except Exception:
+        except Exception as e:
+            print(f"[DEBUG] Erro ao processar como entrada: {e}")
             # Se falhar, segue o fluxo genérico
             pass
-    # Heurística para arquivos de SAÍDA como "Cópia de 01 - Janeiro.csv"
+    
+    # Heurística melhorada para arquivos de SAÍDA
+    # Detecta por nome do arquivo (ex: "Cópia de 02 - Fevereiro.csv") ou estrutura
+    is_outflow_by_name = filename and any(keyword in filename.lower() for keyword in ['saida', 'saída', 'fevereiro', 'janeiro', 'março', 'abril', 'maio', 'junho', 'julho', 'agosto', 'setembro', 'outubro', 'novembro', 'dezembro', 'cópia'])
+    
     has_data_and_valor = ('data' in df.columns) and any('valor' == c for c in df.columns)
     duplicate_valor_cols = [c for c in df.columns if c == 'valor']
-    if has_data_and_valor and len(duplicate_valor_cols) >= 1 and 'entrada' not in df.columns and 'saida' not in df.columns:
+    has_saida_col = 'saida' in df.columns
+    
+    # Detecta arquivo de saída por estrutura ou nome
+    is_outflow_by_structure = (has_data_and_valor and len(duplicate_valor_cols) >= 1 and 
+                              'entrada' not in df.columns and not has_saida_col)
+    
+    if is_outflow_by_name or is_outflow_by_structure:
         try:
+            print(f"[DEBUG] Processando como arquivo de SAÍDA: {filename}")
             df = process_outflow_file(df)
-        except Exception:
-            pass
+            # Se o arquivo está vazio após processamento, não é um erro
+            if df.empty:
+                print(f"[DEBUG] Arquivo {filename} está vazio - continuando processamento")
+        except Exception as e:
+            print(f"[DEBUG] Erro ao processar como saída: {e}")
+            # Se é um arquivo vazio, criar DataFrame vazio em vez de falhar
+            if "não contém dados válidos" in str(e).lower():
+                df = pd.DataFrame(columns=['data', 'saida', 'descricao', 'entrada'])
+                print(f"[DEBUG] Criando DataFrame vazio para {filename}")
+            else:
+                pass
 
     # Fallbacks para localizar colunas essenciais que possam ter nomes diferentes
     if 'data' not in df.columns:
@@ -93,20 +118,7 @@ def processar_dados(df: pd.DataFrame) -> pd.DataFrame:
         df['data'] = pd.to_datetime(df['data'], errors='coerce', dayfirst=True)
     df.dropna(subset=['data'], inplace=True)
     def normalizar_valores_monetarios(serie):
-        serie_str = serie.astype(str)
-        # Remove moeda, espaços e qualquer caractere que não seja dígito, vírgula, ponto ou sinal
-        serie_str = serie_str.str.replace(r'[^0-9,.-]', '', regex=True)
-        # Heurística: se tiver ponto e vírgula, ponto é milhar e vírgula é decimal
-        tem_ponto = serie_str.str.contains(r'\.', regex=False)
-        tem_virgula = serie_str.str.contains(',', regex=False)
-        ambos = tem_ponto & tem_virgula
-        serie_str = serie_str.where(~ambos, serie_str.str.replace('.', '', regex=False))
-        serie_str = serie_str.where(~ambos, serie_str.str.replace(',', '.', regex=False))
-        # Apenas vírgula -> decimal brasileiro
-        somente_virgula = ~tem_ponto & tem_virgula
-        serie_str = serie_str.where(~somente_virgula, serie_str.str.replace(',', '.', regex=False))
-        # Demais casos mantêm como está
-        return pd.to_numeric(serie_str, errors='coerce').fillna(0)
+        return _normalizar_valores_monetarios_series(serie)
 
     for col in ['entrada', 'saida']:
         if col in df.columns:
@@ -139,32 +151,74 @@ def processar_dados(df: pd.DataFrame) -> pd.DataFrame:
     df['dia_da_semana'] = df['data'].dt.dayofweek
     df['semana_do_ano'] = df['data'].dt.isocalendar().week.astype(int)
     # Ela converte valores vazios (NaN) ou numéricos para texto antes de categorizar.
-    df['descricao'] = df['descricao'].astype(str).fillna('')
-    
-    df['categoria'] = df['descricao'].apply(categorizar_por_regras)
+    if 'descricao' in df.columns:
+        df['descricao'] = df['descricao'].astype(str).fillna('')
+        df['categoria'] = df['descricao'].apply(categorizar_por_regras)
+    else:
+        df['descricao'] = ''
+        df['categoria'] = 'outros'
 
     return df
 
 
 def _normalizar_valores_monetarios_series(serie: pd.Series) -> pd.Series:
-    serie_str = serie.astype(str)
-    serie_str = serie_str.str.replace(r'[^0-9,.-]', '', regex=True)
-    tem_ponto = serie_str.str.contains(r'\.', regex=False)
-    tem_virgula = serie_str.str.contains(',', regex=False)
-    ambos = tem_ponto & tem_virgula
-    serie_str = serie_str.where(~ambos, serie_str.str.replace('.', '', regex=False))
-    serie_str = serie_str.where(~ambos, serie_str.str.replace(',', '.', regex=False))
-    somente_virgula = ~tem_ponto & tem_virgula
-    serie_str = serie_str.where(~somente_virgula, serie_str.str.replace(',', '.', regex=False))
-    return pd.to_numeric(serie_str, errors='coerce')
+    def normalize_single_value(value):
+        if pd.isna(value) or value == '' or value == 'nan':
+            return 0.0
+        
+        # Converte para string e remove caracteres não numéricos
+        str_val = str(value).replace('R$', '').replace(' ', '').strip()
+        str_val = ''.join(c for c in str_val if c.isdigit() or c in '.,-')
+        
+        if not str_val:
+            return 0.0
+        
+        # Detecta formato brasileiro
+        has_comma = ',' in str_val
+        has_dot = '.' in str_val
+        
+        if has_comma and has_dot:
+            # Formato: 1.234,56 -> ponto é milhar, vírgula é decimal
+            str_val = str_val.replace('.', '').replace(',', '.')
+        elif has_comma and not has_dot:
+            # Formato: 1234,56 -> vírgula é decimal
+            str_val = str_val.replace(',', '.')
+        # Se só tem ponto, assume que é decimal (formato americano)
+        
+        try:
+            return float(str_val)
+        except:
+            return 0.0
+    
+    return serie.apply(normalize_single_value)
 
 
 def _converter_coluna_data_excel(col: pd.Series) -> pd.Series:
     if pd.api.types.is_integer_dtype(col) or pd.api.types.is_float_dtype(col):
         return pd.to_datetime(col, origin='1899-12-30', unit='D', errors='coerce')
+    
+    # Tenta diferentes formatos de data
     parsed = pd.to_datetime(col, errors='coerce', dayfirst=True)
+    
+    # Se ainda há valores nulos, tenta outros formatos
     if parsed.isna().any():
-        parsed = parsed.fillna(pd.to_datetime(col, errors='coerce'))
+        # Tenta formato DD/MM
+        mask = parsed.isna()
+        if mask.any():
+            parsed.loc[mask] = pd.to_datetime(col.loc[mask], format='%d/%m', errors='coerce')
+        
+        # Se ainda há valores nulos, tenta formato DD/MM/YYYY
+        mask = parsed.isna()
+        if mask.any():
+            parsed.loc[mask] = pd.to_datetime(col.loc[mask], format='%d/%m/%Y', errors='coerce')
+    
+    # Corrigir datas que foram interpretadas como 1900 (formato DD/MM sem ano)
+    if not parsed.empty:
+        # Se todas as datas estão em 1900, assumir que é o ano atual
+        if parsed.dt.year.iloc[0] == 1900 and parsed.dt.year.nunique() == 1:
+            current_year = pd.Timestamp.now().year
+            parsed = parsed + pd.DateOffset(years=current_year - 1900)
+    
     return parsed
 
 
@@ -227,6 +281,7 @@ def process_outflow_file(df_raw: pd.DataFrame) -> pd.DataFrame:
     'Cópia de 01 - Janeiro.csv':
     - Colunas incluem 'DATA' e múltiplas 'VALOR'; a última costuma trazer o valor correto
     - Linha de totais e espaços em branco devem ser descartados
+    - Suporta arquivos vazios (retorna DataFrame vazio em vez de erro)
     Retorna DataFrame com colunas padronizadas.
     """
     df = df_raw.copy()
@@ -255,7 +310,10 @@ def process_outflow_file(df_raw: pd.DataFrame) -> pd.DataFrame:
     
     # Verificar se ainda há dados válidos após a limpeza
     if df.empty:
-        raise ValueError("Arquivo de saída não contém dados válidos após processamento.")
+        print("[DEBUG] Arquivo de saída vazio após processamento - retornando DataFrame vazio")
+        # Retorna DataFrame vazio com estrutura correta em vez de erro
+        empty_df = pd.DataFrame(columns=['data', 'saida', 'descricao', 'entrada'])
+        return empty_df
 
     # Descrição: tentar coluna anterior a valor (por exemplo, fornecedor)
     descricao = None
@@ -273,4 +331,8 @@ def process_outflow_file(df_raw: pd.DataFrame) -> pd.DataFrame:
         df['descricao'] = ''
 
     df['entrada'] = 0.0
+    
+    # Debug: mostrar estatísticas do arquivo processado
+    print(f"[DEBUG] Arquivo de saída processado - Linhas: {len(df)}, Total saídas: {df['saida'].sum():.2f}")
+    
     return df
