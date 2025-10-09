@@ -1,1 +1,45 @@
+# Environment files (keep secrets out of git)
+.env
+.env.*
+**/.env
+**/.env.*
+!.env.example
+!**/.env.example
+
+# Local override and secret files
+*.local
+*.local.*
+*.secrets.*
+*.private.*
+
+# Local startup scripts (ignored)
+start_riskai.local.bat
+*.local.bat
+*.local.ps1
+
+# Node/Frontend typical ignores
+node_modules/
+**/node_modules/
+dist/
+build/
+.turbo/
+.next/
+
+# Python typical ignores
+__pycache__/
+.pytest_cache/
+.venv/
+venv/
+*.pyc
+*.pyo
+*.pyd
+.mypy_cache/
+.coverage
+coverage.xml
+
+# OS/editor files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
 .env
