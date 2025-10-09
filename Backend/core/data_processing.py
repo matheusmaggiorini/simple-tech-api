@@ -20,6 +20,123 @@ def carregar_regras_de_categorizacao():
 
 REGRAS_DE_CATEGORIZACAO = carregar_regras_de_categorizacao()
 
+def extrair_quantidade_e_produto(descricao):
+    """
+    Extrai quantidade e normaliza o nome do produto de uma descrição.
+    
+    Exemplos:
+    - "2 X RATICIDA KROMAX" -> (2, "RATICIDA KROMAX")
+    - "1 X PORTA SANFONADA" -> (1, "PORTA SANFONADA")
+    - "PRODUTO SEM QUANTIDADE" -> (1, "PRODUTO SEM QUANTIDADE")
+    
+    Retorna: (quantidade, produto_normalizado)
+    """
+    if not isinstance(descricao, str) or not descricao.strip():
+        return 1, descricao
+    
+    descricao = descricao.strip()
+    
+    # Padrão: número + X + produto (ex: "2 X RATICIDA KROMAX")
+    import re
+    pattern = r'^(\d+(?:[.,]\d+)?)\s*[xX]\s+(.+)$'
+    match = re.match(pattern, descricao)
+    
+    if match:
+        quantidade_str = match.group(1).replace(',', '.')
+        produto = match.group(2).strip()
+        
+        try:
+            quantidade = float(quantidade_str)
+            return quantidade, produto
+        except ValueError:
+            return 1, descricao
+    
+    # Se não encontrou o padrão, assume quantidade 1
+    return 1, descricao
+
+def processar_descricao_multiplos_produtos(descricao, valor_total, precos_unitarios_por_produto=None):
+    """
+    Processa uma descrição que pode conter múltiplos produtos separados por quebras de linha.
+    
+    Exemplo:
+    "10 X SANLIMP 5LT\n10 X ALCOOL 70% 1L\n10 X DESINFETANTE FLO"
+    
+    Retorna: Lista de tuplas (quantidade, produto, valor_alocado)
+    """
+    if not isinstance(descricao, str) or not descricao.strip():
+        return [(1, descricao, valor_total)]
+    
+    # Divide por quebras de linha
+    linhas = [linha.strip() for linha in descricao.split('\n') if linha.strip()]
+    
+    if len(linhas) <= 1:
+        # Se tem apenas uma linha, processa normalmente
+        quantidade, produto = extrair_quantidade_e_produto(descricao)
+        # Se houver preço unitário conhecido, usa-o, senão atribui tudo ao item
+        if isinstance(precos_unitarios_por_produto, dict):
+            preco_unit = precos_unitarios_por_produto.get(produto)
+            if preco_unit is not None and quantidade is not None and quantidade > 0:
+                valor = preco_unit * quantidade
+                return [(quantidade, produto, valor)]
+        return [(quantidade, produto, valor_total)]
+    
+    # Se tem múltiplas linhas, processa cada uma
+    produtos = []
+    total_quantidade = 0
+    
+    for linha in linhas:
+        quantidade, produto = extrair_quantidade_e_produto(linha)
+        produtos.append((quantidade, produto))
+        total_quantidade += quantidade
+    
+    # Se total_quantidade for 0, assume 1 para cada produto
+    if total_quantidade == 0:
+        total_quantidade = len(produtos)
+        produtos = [(1, produto) for _, produto in produtos]
+    
+    # Se houver mapa de preços unitários, alocar primeiro itens com preço conhecido
+    resultado = []
+    valor_conhecido_total = 0.0
+    itens_desconhecidos = []
+    precos_map = precos_unitarios_por_produto if isinstance(precos_unitarios_por_produto, dict) else {}
+    for quantidade, produto in produtos:
+        preco_unit = precos_map.get(produto)
+        if preco_unit is not None and quantidade > 0:
+            valor_item = preco_unit * quantidade
+            resultado.append((quantidade, produto, valor_item))
+            valor_conhecido_total += valor_item
+        else:
+            itens_desconhecidos.append((quantidade, produto))
+
+    # Calcula o restante a ser distribuído
+    restante = valor_total - valor_conhecido_total
+    if restante < 0:
+        # Se preços conhecidos excedem o total (inconsistência), não permitir negativo
+        restante = 0.0
+
+    # Distribui o restante proporcional à quantidade total dos itens sem preço
+    if itens_desconhecidos:
+        qtd_desconhecida_total = sum(q for q, _ in itens_desconhecidos if q is not None)
+        if qtd_desconhecida_total and qtd_desconhecida_total > 0:
+            valor_unit_desconhecido = restante / qtd_desconhecida_total
+            for quantidade, produto in itens_desconhecidos:
+                valor_item = valor_unit_desconhecido * quantidade
+                resultado.append((quantidade, produto, valor_item))
+        else:
+            # Fallback: dividir igualmente entre os itens desconhecidos
+            valor_por_item = restante / len(itens_desconhecidos)
+            for quantidade, produto in itens_desconhecidos:
+                resultado.append((quantidade, produto, valor_por_item))
+    
+    # Se não havia mapa de preços, ou nenhum preço conhecido encontrado, distribuir por quantidade
+    if not isinstance(precos_unitarios_por_produto, dict):
+        resultado = []
+        for quantidade, produto in produtos:
+            valor_proporcional = (quantidade / total_quantidade) * valor_total
+            resultado.append((quantidade, produto, valor_proporcional))
+
+    return resultado
+
 def categorizar_por_regras(descricao):
     """
     Categoriza a transação com base nas regras, com validação de tipo
@@ -153,9 +270,69 @@ def processar_dados(df: pd.DataFrame, filename: str = None) -> pd.DataFrame:
     # Ela converte valores vazios (NaN) ou numéricos para texto antes de categorizar.
     if 'descricao' in df.columns:
         df['descricao'] = df['descricao'].astype(str).fillna('')
+        
+        # Extrai quantidade e normaliza produto para entradas
+        if 'entrada' in df.columns and df['entrada'].sum() > 0:
+            # Processa cada linha para separar múltiplos produtos
+            linhas_expandidas = []
+            # Mapa incremental de preços unitários conhecidos por produto
+            precos_unitarios = {}
+            
+            for idx, row in df.iterrows():
+                descricao = row['descricao']
+                valor_entrada = row['entrada']
+                
+                # Antes de alocar valores, identificar os itens e quantidades desta linha
+                linhas = [l.strip() for l in str(descricao).split('\n') if str(l).strip()]
+                itens_linha = []
+                for linha_desc in linhas if linhas else [descricao]:
+                    qtd, prod = extrair_quantidade_e_produto(linha_desc)
+                    itens_linha.append((qtd, prod))
+
+                # Constrói mapa de preços conhecido apenas para produtos desta linha
+                precos_para_linha = {prod: precos_unitarios.get(prod) for _, prod in itens_linha if prod in precos_unitarios}
+
+                # Processa a descrição (pode ter múltiplos produtos) usando preços conhecidos quando houver
+                produtos_processados = processar_descricao_multiplos_produtos(descricao, valor_entrada, precos_para_linha)
+                
+                # Cria uma linha para cada produto e atualiza preço unitário conhecido
+                for quantidade, produto, valor_alocado in produtos_processados:
+                    linha_nova = row.copy()
+                    linha_nova['quantidade'] = quantidade
+                    linha_nova['produto_normalizado'] = produto
+                    linha_nova['entrada'] = valor_alocado
+                    linha_nova['descricao_original'] = descricao  # Mantém descrição original
+                    linhas_expandidas.append(linha_nova)
+
+                    # Atualiza mapa de preço unitário se possível
+                    try:
+                        if quantidade and quantidade > 0:
+                            preco_unit = float(valor_alocado) / float(quantidade)
+                            # Só registra se for um valor positivo razoável
+                            if preco_unit > 0:
+                                precos_unitarios[produto] = preco_unit
+                    except Exception:
+                        pass
+            
+            # Substitui o DataFrame original pelo expandido
+            if linhas_expandidas:
+                df = pd.DataFrame(linhas_expandidas)
+                print(f"[DEBUG] Expandido {len(df)} linhas para {len(linhas_expandidas)} produtos individuais")
+            else:
+                # Fallback se não conseguiu processar
+                quantidade_produto = df['descricao'].apply(extrair_quantidade_e_produto)
+                df['quantidade'] = quantidade_produto.apply(lambda x: x[0])
+                df['produto_normalizado'] = quantidade_produto.apply(lambda x: x[1])
+        else:
+            # Para saídas, mantém como está
+            df['quantidade'] = 1
+            df['produto_normalizado'] = df['descricao']
+        
         df['categoria'] = df['descricao'].apply(categorizar_por_regras)
     else:
         df['descricao'] = ''
+        df['quantidade'] = 1
+        df['produto_normalizado'] = ''
         df['categoria'] = 'outros'
 
     return df
