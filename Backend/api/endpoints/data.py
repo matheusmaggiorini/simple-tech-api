@@ -40,6 +40,148 @@ def calcular_estatisticas_historicas(df: pd.DataFrame) -> Dict[str, Any]:
     }
     return {key: (float(value) if isinstance(value, (np.number, np.float64)) else value) for key, value in stats.items()}
 
+def _read_multiple_sheets_outflow(upload: UploadFile) -> pd.DataFrame:
+    """
+    Lê arquivos de saída com múltiplas abas (cada aba = um dia do mês).
+    Cada aba deve ter colunas: SAIDA, VALOR, Data
+    Retorna DataFrame consolidado com todos os dados das abas.
+    """
+    filename = upload.filename or "arquivo_sem_nome"
+    
+    try:
+        upload.file.seek(0)
+        xls = pd.ExcelFile(upload.file)
+        
+        if not xls.sheet_names:
+            raise ValueError(f"Arquivo {filename} não contém abas válidas")
+        
+        print(f"[DEBUG] Arquivo {filename} possui {len(xls.sheet_names)} abas: {xls.sheet_names}")
+        
+        all_dataframes = []
+        
+        for sheet_name in xls.sheet_names:
+            try:
+                upload.file.seek(0)
+                df_sheet = pd.read_excel(upload.file, sheet_name=sheet_name)
+                
+                # Verifica se a aba tem dados
+                if df_sheet.empty:
+                    print(f"[DEBUG] Aba '{sheet_name}' está vazia - pulando")
+                    continue
+                
+                # Normaliza nomes das colunas
+                df_sheet.columns = [str(c).strip().lower() for c in df_sheet.columns]
+                
+                # Verifica se tem as colunas necessárias
+                has_saida = 'saida' in df_sheet.columns
+                has_valor = 'valor' in df_sheet.columns
+                has_data = 'data' in df_sheet.columns
+                
+                if not (has_saida and has_valor and has_data):
+                    print(f"[DEBUG] Aba '{sheet_name}' não tem colunas SAIDA, VALOR e Data - pulando")
+                    continue
+                
+                # Processa os dados da aba
+                df_processed = df_sheet.copy()
+                
+                # Processa valores monetários - usa coluna 'valor' para o valor monetário
+                df_processed['saida'] = _normalizar_valores_monetarios_series(df_processed['valor'])
+                # Usa coluna 'saida' original para descrição
+                df_processed['descricao'] = df_processed['saida'].astype(str).fillna('')
+                df_processed['entrada'] = 0.0
+                
+                # Processa data
+                df_processed['data'] = _converter_coluna_data_excel(df_processed['data'])
+                
+                # Remove linhas inválidas
+                df_processed = df_processed[pd.to_numeric(df_processed['saida'], errors='coerce').fillna(0) > 0].copy()
+                df_processed = df_processed.dropna(how='all').copy()
+                df_processed = df_processed.dropna(subset=['data']).copy()
+                
+                if not df_processed.empty:
+                    # Adiciona informação da aba para debug
+                    df_processed['aba_origem'] = sheet_name
+                    all_dataframes.append(df_processed)
+                    print(f"[DEBUG] Aba '{sheet_name}' processada - {len(df_processed)} linhas válidas")
+                
+            except Exception as e:
+                print(f"[WARNING] Erro ao processar aba '{sheet_name}': {e}")
+                continue
+        
+        if not all_dataframes:
+            print(f"[WARNING] Nenhuma aba válida encontrada em {filename}")
+            return pd.DataFrame(columns=['data', 'saida', 'descricao', 'entrada'])
+        
+        # Concatena todos os DataFrames das abas
+        df_consolidado = pd.concat(all_dataframes, ignore_index=True)
+        print(f"[DEBUG] Arquivo {filename} consolidado - {len(df_consolidado)} linhas de {len(all_dataframes)} abas")
+        
+        return df_consolidado
+        
+    except Exception as e:
+        print(f"[ERROR] Erro ao ler arquivo {filename} com múltiplas abas: {e}")
+        raise ValueError(f"Erro ao ler arquivo {filename}: {str(e)}")
+
+def _normalizar_valores_monetarios_series(serie: pd.Series) -> pd.Series:
+    """Normaliza valores monetários brasileiros"""
+    def normalize_single_value(value):
+        if pd.isna(value) or value == '' or value == 'nan':
+            return 0.0
+        
+        # Converte para string e remove caracteres não numéricos
+        str_val = str(value).replace('R$', '').replace(' ', '').strip()
+        str_val = ''.join(c for c in str_val if c.isdigit() or c in '.,-')
+        
+        if not str_val:
+            return 0.0
+        
+        # Detecta formato brasileiro
+        has_comma = ',' in str_val
+        has_dot = '.' in str_val
+        
+        if has_comma and has_dot:
+            # Formato: 1.234,56 -> ponto é milhar, vírgula é decimal
+            str_val = str_val.replace('.', '').replace(',', '.')
+        elif has_comma and not has_dot:
+            # Formato: 1234,56 -> vírgula é decimal
+            str_val = str_val.replace(',', '.')
+        
+        try:
+            return float(str_val)
+        except:
+            return 0.0
+    
+    return serie.apply(normalize_single_value)
+
+def _converter_coluna_data_excel(col: pd.Series) -> pd.Series:
+    """Converte coluna de data do Excel para datetime"""
+    if pd.api.types.is_integer_dtype(col) or pd.api.types.is_float_dtype(col):
+        return pd.to_datetime(col, origin='1899-12-30', unit='D', errors='coerce')
+    
+    # Tenta diferentes formatos de data
+    parsed = pd.to_datetime(col, errors='coerce', dayfirst=True)
+    
+    # Se ainda há valores nulos, tenta outros formatos
+    if parsed.isna().any():
+        # Tenta formato DD/MM
+        mask = parsed.isna()
+        if mask.any():
+            parsed.loc[mask] = pd.to_datetime(col.loc[mask], format='%d/%m', errors='coerce')
+        
+        # Se ainda há valores nulos, tenta formato DD/MM/YYYY
+        mask = parsed.isna()
+        if mask.any():
+            parsed.loc[mask] = pd.to_datetime(col.loc[mask], format='%d/%m/%Y', errors='coerce')
+    
+    # Corrigir datas que foram interpretadas como 1900 (formato DD/MM sem ano)
+    if not parsed.empty:
+        # Se todas as datas estão em 1900, assumir que é o ano atual
+        if parsed.dt.year.iloc[0] == 1900 and parsed.dt.year.nunique() == 1:
+            current_year = pd.Timestamp.now().year
+            parsed = parsed + pd.DateOffset(years=current_year - 1900)
+    
+    return parsed
+
 def _read_any_cashflow_table(upload: UploadFile, treat_outflow_layout: bool = False) -> pd.DataFrame:
     """Lê uma planilha enviada (xlsx/xls/csv) e retorna um DataFrame com
     as colunas referentes a fluxo de caixa. Tenta ser tolerante a variações:
@@ -348,7 +490,27 @@ async def upload_excel_bundle(file: UploadFile | None = File(None), files: list[
                 treat_as_outflow = is_outflow_file or bool(has_outflow)
                 print(f"[DEBUG] Arquivo {up.filename} - tratado como saída: {treat_as_outflow}")
                 
-                df_single = _read_any_cashflow_table(up, treat_outflow_layout=treat_as_outflow)
+                # Verifica se é um arquivo Excel com múltiplas abas (arquivo de saída mensal)
+                is_excel_file = filename_lower.endswith(('.xlsx', '.xls'))
+                has_multiple_sheets = False
+                
+                if is_excel_file and treat_as_outflow:
+                    try:
+                        # Verifica se tem múltiplas abas
+                        up.file.seek(0)
+                        xls = pd.ExcelFile(up.file)
+                        has_multiple_sheets = len(xls.sheet_names) > 1
+                        print(f"[DEBUG] Arquivo {up.filename} - múltiplas abas: {has_multiple_sheets} ({len(xls.sheet_names)} abas)")
+                    except Exception as e:
+                        print(f"[DEBUG] Erro ao verificar abas do arquivo {up.filename}: {e}")
+                        has_multiple_sheets = False
+                
+                # Escolhe a função de leitura apropriada
+                if has_multiple_sheets and treat_as_outflow:
+                    print(f"[DEBUG] Usando leitura de múltiplas abas para {up.filename}")
+                    df_single = _read_multiple_sheets_outflow(up)
+                else:
+                    df_single = _read_any_cashflow_table(up, treat_outflow_layout=treat_as_outflow)
                 print("Colunas lidas:", df_single.columns.tolist())
                 
                 # Verifica se o DataFrame não está vazio
