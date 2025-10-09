@@ -25,17 +25,22 @@ class FileUploadResponse(BaseModel):
 
 def calcular_estatisticas_historicas(df: pd.DataFrame) -> Dict[str, Any]:
     if df.empty: return {}
-    if "fluxo_diario" not in df.columns: df["fluxo_diario"] = df["entrada"] - df["saida"]
+    # Garante colunas numéricas para evitar distorções de totais
+    df_num = df.copy()
+    df_num["entrada"] = pd.to_numeric(df_num.get("entrada", 0), errors='coerce').fillna(0)
+    df_num["saida"] = pd.to_numeric(df_num.get("saida", 0), errors='coerce').fillna(0)
+    if "fluxo_diario" not in df_num.columns:
+        df_num["fluxo_diario"] = df_num["entrada"] - df_num["saida"]
     stats = {
-        "total_entradas": df["entrada"].sum(),
-        "total_saidas": df["saida"].sum(),
-        "media_entrada": df["entrada"].mean(),
-        "media_saida": df["saida"].mean(),
-        "desvio_padrao_entrada": df["entrada"].std(),
-        "desvio_padrao_saida": df["saida"].std(),
-        "media_fluxo": df["fluxo_diario"].mean(),
-        "desvio_padrao_fluxo": df["fluxo_diario"].std(),
-        "ultimo_saldo": df["saldo"].iloc[-1] if "saldo" in df.columns and not df.empty else 0.0,
+        "total_entradas": df_num["entrada"].sum(),
+        "total_saidas": df_num["saida"].sum(),
+        "media_entrada": df_num["entrada"].mean(),
+        "media_saida": df_num["saida"].mean(),
+        "desvio_padrao_entrada": df_num["entrada"].std(),
+        "desvio_padrao_saida": df_num["saida"].std(),
+        "media_fluxo": df_num["fluxo_diario"].mean(),
+        "desvio_padrao_fluxo": df_num["fluxo_diario"].std(),
+        "ultimo_saldo": df_num["saldo"].iloc[-1] if "saldo" in df_num.columns and not df_num.empty else 0.0,
         "data_atualizacao": pd.Timestamp.utcnow().isoformat(),
     }
     return {key: (float(value) if isinstance(value, (np.number, np.float64)) else value) for key, value in stats.items()}
@@ -578,10 +583,11 @@ async def upload_excel_bundle(file: UploadFile | None = File(None), files: list[
                 df_processed['entrada'] = 0.0
             if 'saida' not in df_processed.columns:
                 df_processed['saida'] = 0.0
-            if 'fluxo_diario' not in df_processed.columns:
-                df_processed['fluxo_diario'] = df_processed['entrada'] - df_processed['saida']
-            if 'saldo' not in df_processed.columns:
-                df_processed['saldo'] = df_processed['fluxo_diario'].cumsum()
+            # Recalcula sempre com colunas numéricas para evitar trocas ou textos
+            df_processed['entrada'] = pd.to_numeric(df_processed.get('entrada', 0), errors='coerce').fillna(0)
+            df_processed['saida'] = pd.to_numeric(df_processed.get('saida', 0), errors='coerce').fillna(0)
+            df_processed['fluxo_diario'] = df_processed['entrada'] - df_processed['saida']
+            df_processed['saldo'] = df_processed['fluxo_diario'].cumsum()
             
             print(f"[DEBUG] Após consolidação final - Linhas: {len(df_processed)}, Colunas: {list(df_processed.columns)}")
             

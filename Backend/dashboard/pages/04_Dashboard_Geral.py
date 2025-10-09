@@ -135,7 +135,8 @@ if not api_status:
 
 # Carregar dados
 with st.spinner("📊 Carregando dados..."):
-    df_data = get_processed_data(limit=1000)
+    # Carrega todos os registros processados para garantir totais corretos
+    df_data = get_processed_data(limit=-1)
 
 if df_data.empty:
     st.error("❌ Nenhum dado foi retornado da API.")
@@ -194,7 +195,8 @@ col1, col2, col3, col4 = st.columns(4)
 
 try:
     with col1:
-        total_entrada = df_data['entrada'].sum()
+        # Garante soma estritamente da coluna de entradas (coercendo texto -> número)
+        total_entrada = pd.to_numeric(df_data['entrada'], errors='coerce').fillna(0).sum()
         st.metric("Total de Entradas", f"R$ {total_entrada:,.2f}")
 
     with col2:
@@ -202,7 +204,11 @@ try:
         st.metric("Total de Saídas", f"R$ {total_saida:,.2f}")
 
     with col3:
-        saldo_atual = df_data['saldo'].iloc[-1] if len(df_data) > 0 else 0
+        # Recalcula localmente para evitar divergências vindas do backend
+        entradas_num = pd.to_numeric(df_data['entrada'], errors='coerce').fillna(0)
+        saidas_num = pd.to_numeric(df_data['saida'], errors='coerce').fillna(0)
+        saldo_series = (entradas_num - saidas_num).cumsum()
+        saldo_atual = saldo_series.iloc[-1] if len(saldo_series) > 0 else 0
         st.metric("Saldo Atual", f"R$ {saldo_atual:,.2f}")
 
     with col4:

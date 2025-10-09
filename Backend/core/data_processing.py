@@ -273,56 +273,9 @@ def processar_dados(df: pd.DataFrame, filename: str = None) -> pd.DataFrame:
         
         # Extrai quantidade e normaliza produto para entradas
         if 'entrada' in df.columns and df['entrada'].sum() > 0:
-            # Processa cada linha para separar múltiplos produtos
-            linhas_expandidas = []
-            # Mapa incremental de preços unitários conhecidos por produto
-            precos_unitarios = {}
-            
-            for idx, row in df.iterrows():
-                descricao = row['descricao']
-                valor_entrada = row['entrada']
-                
-                # Antes de alocar valores, identificar os itens e quantidades desta linha
-                linhas = [l.strip() for l in str(descricao).split('\n') if str(l).strip()]
-                itens_linha = []
-                for linha_desc in linhas if linhas else [descricao]:
-                    qtd, prod = extrair_quantidade_e_produto(linha_desc)
-                    itens_linha.append((qtd, prod))
-
-                # Constrói mapa de preços conhecido apenas para produtos desta linha
-                precos_para_linha = {prod: precos_unitarios.get(prod) for _, prod in itens_linha if prod in precos_unitarios}
-
-                # Processa a descrição (pode ter múltiplos produtos) usando preços conhecidos quando houver
-                produtos_processados = processar_descricao_multiplos_produtos(descricao, valor_entrada, precos_para_linha)
-                
-                # Cria uma linha para cada produto e atualiza preço unitário conhecido
-                for quantidade, produto, valor_alocado in produtos_processados:
-                    linha_nova = row.copy()
-                    linha_nova['quantidade'] = quantidade
-                    linha_nova['produto_normalizado'] = produto
-                    linha_nova['entrada'] = valor_alocado
-                    linha_nova['descricao_original'] = descricao  # Mantém descrição original
-                    linhas_expandidas.append(linha_nova)
-
-                    # Atualiza mapa de preço unitário se possível
-                    try:
-                        if quantidade and quantidade > 0:
-                            preco_unit = float(valor_alocado) / float(quantidade)
-                            # Só registra se for um valor positivo razoável
-                            if preco_unit > 0:
-                                precos_unitarios[produto] = preco_unit
-                    except Exception:
-                        pass
-            
-            # Substitui o DataFrame original pelo expandido
-            if linhas_expandidas:
-                df = pd.DataFrame(linhas_expandidas)
-                print(f"[DEBUG] Expandido {len(df)} linhas para {len(linhas_expandidas)} produtos individuais")
-            else:
-                # Fallback se não conseguiu processar
-                quantidade_produto = df['descricao'].apply(extrair_quantidade_e_produto)
-                df['quantidade'] = quantidade_produto.apply(lambda x: x[0])
-                df['produto_normalizado'] = quantidade_produto.apply(lambda x: x[1])
+            # Requisito: não dividir entradas por produtos; manter total exatamente como na planilha
+            df['quantidade'] = 1
+            df['produto_normalizado'] = df['descricao']
         else:
             # Para saídas, mantém como está
             df['quantidade'] = 1
@@ -410,14 +363,7 @@ def process_inflow_file(df_raw: pd.DataFrame) -> pd.DataFrame:
     df.columns = [str(c).strip() for c in df.columns]
     lower_to_original = {str(c).strip().lower(): c for c in df.columns}
 
-    # Filtrar cancelados
-    for cancel_key in ['cancelado', 'cancelada', 'canceled']:
-        if cancel_key in lower_to_original:
-            c = lower_to_original[cancel_key]
-            mask = df[c].astype(str).str.strip().str.lower().isin(['sim', 'yes', 'true', '1'])
-            if mask.any():
-                df = df.loc[~mask].copy()
-            break
+    # Não filtrar cancelados: manter todas as linhas conforme solicitado
 
     # Data
     data_col = None
@@ -492,20 +438,22 @@ def process_outflow_file(df_raw: pd.DataFrame) -> pd.DataFrame:
         empty_df = pd.DataFrame(columns=['data', 'saida', 'descricao', 'entrada'])
         return empty_df
 
-    # Descrição: tentar coluna anterior a valor (por exemplo, fornecedor)
-    descricao = None
-    try:
-        idx = list(df.columns).index(valor_col)
-        if idx - 1 >= 0:
-            descricao = list(df.columns)[idx - 1]
-    except Exception:
-        descricao = None
-    if descricao and descricao != 'valor':
-        df['descricao'] = df[descricao].astype(str).fillna('')
-    elif 'tipo' in df.columns:
-        df['descricao'] = df['tipo'].astype(str).fillna('')
-    else:
-        df['descricao'] = ''
+    # Descrição: preferir 'fornecedor' ou 'forma'; senão coluna anterior ao VALOR; fallback 'tipo'
+    desc_col = None
+    for cand in ['fornecedor', 'forma', 'descricao', 'saida', 'tipo']:
+        if cand in df.columns and cand != 'valor':
+            desc_col = cand
+            break
+    if desc_col is None:
+        try:
+            idx = list(df.columns).index(valor_col)
+            if idx - 1 >= 0:
+                prev_col = list(df.columns)[idx - 1]
+                if prev_col != 'valor':
+                    desc_col = prev_col
+        except Exception:
+            desc_col = None
+    df['descricao'] = df[desc_col].astype(str).fillna('') if desc_col in df.columns else ''
 
     df['entrada'] = 0.0
     
