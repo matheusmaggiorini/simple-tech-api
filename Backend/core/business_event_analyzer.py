@@ -40,17 +40,50 @@ def identify_key_business_events(df: pd.DataFrame, top_n: int = 5):
 
     # Analisar Entradas (Produtos Chave) - interpretar descrições com quantidades
     inflows = df[df['entrada'] > 0].copy()
+    
+    # Remove "FRETE + TAXAS" das receitas pois não é um produto real
+    if 'descricao' in inflows.columns:
+        inflows = inflows[~inflows['descricao'].str.contains(r'FRETE \+ TAXAS', case=False, na=False)]
 
     # Constrói um dataframe expandido SOMENTE para análise (não altera o original):
     expanded_rows = []
+    
+    # Primeiro, constrói um mapa de preços unitários conhecidos a partir de transações de item único
+    precos_unitarios_por_produto = {}
     for _, row in inflows.iterrows():
         valor_total = float(row.get('entrada', 0) or 0)
         desc = row.get('descricao', '')
         itens = _split_inflow_description_with_quantities(desc)
-        quantidade_total = sum(q for q, _ in itens) or 1.0
-        # Valor proporcional por item com base na quantidade
-        for qtd, produto in itens:
-            valor_item = valor_total * (qtd / quantidade_total)
+        
+        # Se é um item único, calcula o preço unitário
+        if len(itens) == 1:
+            qtd, produto = itens[0]
+            if qtd > 0 and produto:
+                preco_unitario = valor_total / qtd
+                if produto not in precos_unitarios_por_produto:
+                    precos_unitarios_por_produto[produto] = []
+                precos_unitarios_por_produto[produto].append(preco_unitario)
+    
+    # Calcula preços médios para produtos com múltiplas transações
+    for produto in precos_unitarios_por_produto:
+        if len(precos_unitarios_por_produto[produto]) > 1:
+            precos_unitarios_por_produto[produto] = [sum(precos_unitarios_por_produto[produto]) / len(precos_unitarios_por_produto[produto])]
+        else:
+            precos_unitarios_por_produto[produto] = precos_unitarios_por_produto[produto]
+    
+    # Converte para formato esperado pela função processar_descricao_multiplos_produtos
+    precos_map = {produto: precos[0] for produto, precos in precos_unitarios_por_produto.items()}
+    
+    # Agora processa todas as transações usando a lógica melhorada
+    for _, row in inflows.iterrows():
+        valor_total = float(row.get('entrada', 0) or 0)
+        desc = row.get('descricao', '')
+        
+        # Usa a função melhorada para processar descrições com múltiplos produtos
+        from .data_processing import processar_descricao_multiplos_produtos
+        itens_processados = processar_descricao_multiplos_produtos(desc, valor_total, precos_map)
+        
+        for qtd, produto, valor_item in itens_processados:
             expanded_rows.append({
                 'produto': produto,
                 'valor': valor_item,
@@ -80,7 +113,16 @@ def identify_key_business_events(df: pd.DataFrame, top_n: int = 5):
 
     # Construir melhor nome do custo
     def pick_outflow_name(row):
-        for col in ['fornecedor', 'forma', 'descricao', 'saida', 'tipo']:
+        # Prioriza a coluna SAIDA (nome do fornecedor) se disponível
+        if 'saida' in row.index:
+            val = row['saida']
+            if pd.notna(val):
+                text = str(val).strip()
+                if text and not re.fullmatch(r"[-+]?\d+(?:[.,]\d+)?", text):
+                    return text
+        
+        # Se SAIDA não está disponível ou é numérica, tenta outras colunas textuais
+        for col in ['fornecedor', 'forma', 'descricao', 'tipo']:
             if col in row.index:
                 val = row[col]
                 if pd.isna(val):
@@ -88,10 +130,25 @@ def identify_key_business_events(df: pd.DataFrame, top_n: int = 5):
                 text = str(val).strip()
                 if not text:
                     continue
-                # Ignora strings numéricas
+                # Ignora strings puramente numéricas
                 if re.fullmatch(r"[-+]?\d+(?:[.,]\d+)?", text):
                     continue
                 return text
+        
+        # Se não encontrou descrição textual, usa valores numéricos como último recurso
+        for col in ['valor', 'valor_total']:
+            if col in row.index:
+                val = row[col]
+                if pd.isna(val):
+                    continue
+                text = str(val).strip()
+                if not text:
+                    continue
+                # Se é numérico, usa como identificador com prefixo
+                if re.fullmatch(r"[-+]?\d+(?:[.,]\d+)?", text):
+                    return f"Custo #{text}"
+                return text
+        
         return 'Desconhecido'
 
     outflows['__nome_custo'] = outflows.apply(pick_outflow_name, axis=1)

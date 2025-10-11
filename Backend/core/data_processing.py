@@ -99,6 +99,7 @@ def processar_descricao_multiplos_produtos(descricao, valor_total, precos_unitar
     valor_conhecido_total = 0.0
     itens_desconhecidos = []
     precos_map = precos_unitarios_por_produto if isinstance(precos_unitarios_por_produto, dict) else {}
+    
     for quantidade, produto in produtos:
         preco_unit = precos_map.get(produto)
         if preco_unit is not None and quantidade > 0:
@@ -129,7 +130,7 @@ def processar_descricao_multiplos_produtos(descricao, valor_total, precos_unitar
                 resultado.append((quantidade, produto, valor_por_item))
     
     # Se não havia mapa de preços, ou nenhum preço conhecido encontrado, distribuir por quantidade
-    if not isinstance(precos_unitarios_por_produto, dict):
+    if not isinstance(precos_unitarios_por_produto, dict) or not resultado:
         resultado = []
         for quantidade, produto in produtos:
             valor_proporcional = (quantidade / total_quantidade) * valor_total
@@ -178,7 +179,7 @@ def processar_dados(df: pd.DataFrame, filename: str = None) -> pd.DataFrame:
     
     # Heurística melhorada para arquivos de SAÍDA
     # Detecta por nome do arquivo (ex: "Cópia de 02 - Fevereiro.csv") ou estrutura
-    is_outflow_by_name = filename and any(keyword in filename.lower() for keyword in ['saida', 'saída', 'fevereiro', 'janeiro', 'março', 'abril', 'maio', 'junho', 'julho', 'agosto', 'setembro', 'outubro', 'novembro', 'dezembro', 'cópia'])
+    is_outflow_by_name = filename and any(keyword in filename.lower() for keyword in ['saida', 'saída', 'fevereiro', 'janeiro', 'março', 'abril', 'maio', 'junho', 'julho', 'agosto', 'setembro', 'outubro', 'novembro', 'dezembro', 'cópia', 'yuuuecnbiosksnud'])
     
     has_data_and_valor = ('data' in df.columns) and any('valor' == c for c in df.columns)
     duplicate_valor_cols = [c for c in df.columns if c == 'valor']
@@ -188,7 +189,11 @@ def processar_dados(df: pd.DataFrame, filename: str = None) -> pd.DataFrame:
     is_outflow_by_structure = (has_data_and_valor and len(duplicate_valor_cols) >= 1 and 
                               'entrada' not in df.columns and not has_saida_col)
     
-    if is_outflow_by_name or is_outflow_by_structure:
+    # Detecta estrutura específica da planilha de saídas (SAIDA, VALOR, Data)
+    is_outflow_specific_structure = (has_data_and_valor and 'saida' in df.columns and 
+                                   df.columns.tolist() == ['saida', 'valor', 'data'])
+    
+    if is_outflow_by_name or is_outflow_by_structure or is_outflow_specific_structure:
         try:
             print(f"[DEBUG] Processando como arquivo de SAÍDA: {filename}")
             df = process_outflow_file(df)
@@ -425,10 +430,15 @@ def process_outflow_file(df_raw: pd.DataFrame) -> pd.DataFrame:
     if not valor_cols:
         raise ValueError("Coluna 'VALOR' não encontrada para saídas.")
     valor_col = valor_cols[-1]
-    df['saida'] = _normalizar_valores_monetarios_series(df[valor_col]).fillna(0)
+    
+    # Se não foi processado acima, normaliza os valores monetários
+    if 'saida' not in df.columns or df['saida'].sum() == 0:
+        valores_normalizados = _normalizar_valores_monetarios_series(df[valor_col]).fillna(0)
+        df['saida'] = valores_normalizados
+        # Remove linhas com valores zerados ou inválidos
+        df = df[df['saida'] > 0].copy()
 
     # Remover linhas inválidas/zeradas e completamente vazias
-    df = df[pd.to_numeric(df['saida'], errors='coerce').fillna(0) > 0].copy()
     df = df.dropna(how='all').copy()
     
     # Verificar se ainda há dados válidos após a limpeza
@@ -438,22 +448,49 @@ def process_outflow_file(df_raw: pd.DataFrame) -> pd.DataFrame:
         empty_df = pd.DataFrame(columns=['data', 'saida', 'descricao', 'entrada'])
         return empty_df
 
-    # Descrição: preferir 'fornecedor' ou 'forma'; senão coluna anterior ao VALOR; fallback 'tipo'
-    desc_col = None
-    for cand in ['fornecedor', 'forma', 'descricao', 'saida', 'tipo']:
-        if cand in df.columns and cand != 'valor':
-            desc_col = cand
-            break
-    if desc_col is None:
-        try:
-            idx = list(df.columns).index(valor_col)
-            if idx - 1 >= 0:
-                prev_col = list(df.columns)[idx - 1]
-                if prev_col != 'valor':
-                    desc_col = prev_col
-        except Exception:
-            desc_col = None
-    df['descricao'] = df[desc_col].astype(str).fillna('') if desc_col in df.columns else ''
+    # Para planilhas de saída, mapeia corretamente as colunas
+    if 'saida' in df.columns and 'valor' in df.columns:
+        # A coluna SAIDA contém o nome do fornecedor (não é valor monetário)
+        df['descricao'] = df['saida'].astype(str).fillna('')
+        # A coluna VALOR contém os valores monetários - substitui a coluna saida
+        df['saida'] = _normalizar_valores_monetarios_series(df['valor']).fillna(0)
+        # Remove linhas com valores zerados
+        df = df[df['saida'] > 0].copy()
+    else:
+        # Fallback para outras estruturas
+        desc_col = None
+        for cand in ['fornecedor', 'forma', 'descricao', 'tipo']:
+            if cand in df.columns and cand != 'valor':
+                desc_col = cand
+                break
+        if desc_col is None:
+            try:
+                idx = list(df.columns).index(valor_col)
+                if idx - 1 >= 0:
+                    prev_col = list(df.columns)[idx - 1]
+                    if prev_col != 'valor':
+                        desc_col = prev_col
+            except Exception:
+                desc_col = None
+        
+        # Garante que sempre há uma descrição
+        if desc_col and desc_col in df.columns:
+            df['descricao'] = df[desc_col].astype(str).fillna('')
+        else:
+            # Se não encontrou coluna de descrição, usa o valor como descrição
+            df['descricao'] = df[valor_col].astype(str).fillna('')
+    
+    # Se a descrição for vazia ou apenas numérica, tenta usar outras colunas
+    for idx, row in df.iterrows():
+        if not df.loc[idx, 'descricao'] or df.loc[idx, 'descricao'] == 'nan':
+            # Tenta outras colunas disponíveis
+            for col in df.columns:
+                if col not in ['data', 'valor', valor_col] and not pd.isna(row[col]):
+                    df.loc[idx, 'descricao'] = str(row[col]).strip()
+                    break
+            # Se ainda está vazio, usa o valor como identificador
+            if not df.loc[idx, 'descricao'] or df.loc[idx, 'descricao'] == 'nan':
+                df.loc[idx, 'descricao'] = f"Custo {row[valor_col]}"
 
     df['entrada'] = 0.0
     
