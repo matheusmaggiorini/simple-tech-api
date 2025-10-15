@@ -190,8 +190,9 @@ def processar_dados(df: pd.DataFrame, filename: str = None) -> pd.DataFrame:
                               'entrada' not in df.columns and not has_saida_col)
     
     # Detecta estrutura específica da planilha de saídas (SAIDA, VALOR, Data)
-    is_outflow_specific_structure = (has_data_and_valor and 'saida' in df.columns and 
-                                   df.columns.tolist() == ['saida', 'valor', 'data'])
+    # Verifica se tem as colunas SAIDA, VALOR e DATA (independente da ordem)
+    has_saida_valor_data = ('saida' in df.columns and 'valor' in df.columns and 'data' in df.columns)
+    is_outflow_specific_structure = (has_data_and_valor and 'saida' in df.columns and has_saida_valor_data)
     
     if is_outflow_by_name or is_outflow_by_structure or is_outflow_specific_structure:
         try:
@@ -456,6 +457,11 @@ def process_outflow_file(df_raw: pd.DataFrame) -> pd.DataFrame:
         df['saida'] = _normalizar_valores_monetarios_series(df['valor']).fillna(0)
         # Remove linhas com valores zerados
         df = df[df['saida'] > 0].copy()
+    elif 'saida' in df.columns and 'valor' not in df.columns:
+        # Se só tem SAIDA, assume que é o nome do fornecedor e precisa de uma coluna de valor
+        df['descricao'] = df['saida'].astype(str).fillna('')
+        # Se não há coluna VALOR, cria uma coluna saida com valor 0 (será preenchida depois)
+        df['saida'] = 0.0
     else:
         # Fallback para outras estruturas
         desc_col = None

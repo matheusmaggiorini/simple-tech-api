@@ -22,6 +22,8 @@ from core.scenario_simulator import run_simulation, run_event_simulation, run_lo
 from core.loan_analyzer import suggest_loan_options
 # Importa a nova função para analisar eventos de negócio
 from core.business_event_analyzer import identify_key_business_events
+# Importa a função para processar dados
+from core.data_processing import processar_dados
 
 # Definir o router
 router = APIRouter()
@@ -279,6 +281,116 @@ def validate_historical_data_for_events(df: pd.DataFrame) -> bool:
     
     return True
 
+# --- Função para carregar dados reais das planilhas de saída ---
+
+def load_real_business_data():
+    """
+    Carrega dados reais das planilhas de saída e entrada localizadas em Backend/data/
+    """
+    try:
+        import pandas as pd
+        from pathlib import Path
+        
+        # Caminho para as planilhas de saída
+        outflow_dir = Path("Backend/data/dados_de_saida")
+        
+        # Caminho para as planilhas de entrada (se existirem)
+        inflow_dir = Path("Backend/data")
+        
+        all_data = []
+        files_loaded = []
+        
+        # Carregar planilhas de saída
+        if outflow_dir.exists():
+            logger.info(f"Carregando planilhas de saída de: {outflow_dir}")
+            for file_path in outflow_dir.glob("*.xlsx"):
+                try:
+                    logger.info(f"Carregando planilha de saída: {file_path.name}")
+                    df = pd.read_excel(file_path)
+                    
+                    # Verificar se tem as colunas necessárias
+                    required_cols = ['SAIDA', 'VALOR', 'DATA']
+                    missing_cols = [col for col in required_cols if col not in df.columns]
+                    
+                    if missing_cols:
+                        logger.warning(f"Planilha {file_path.name} não tem colunas: {missing_cols}")
+                        continue
+                    
+                    # Adicionar nome do arquivo para debug
+                    df['arquivo_origem'] = file_path.name
+                    df['tipo_transacao'] = 'saida'
+                    all_data.append(df)
+                    files_loaded.append(f"SAIDA: {file_path.name}")
+                    
+                except Exception as e:
+                    logger.error(f"Erro ao carregar {file_path.name}: {str(e)}")
+                    continue
+        
+        # Carregar planilhas de entrada (se existirem)
+        if inflow_dir.exists():
+            logger.info(f"Procurando planilhas de entrada em: {inflow_dir}")
+            
+            # Carregar planilha principal que contém receitas e custos
+            main_file = inflow_dir / "base_de_dados_empresa_longa.xlsx"
+            if main_file.exists():
+                try:
+                    logger.info(f"Carregando planilha principal: {main_file.name}")
+                    df = pd.read_excel(main_file)
+                    
+                    # Verificar se tem colunas de entrada e saída
+                    if 'entrada' in df.columns and 'saida' in df.columns and 'data' in df.columns:
+                        # Adicionar nome do arquivo para debug
+                        df['arquivo_origem'] = main_file.name
+                        df['tipo_transacao'] = 'completo'
+                        all_data.append(df)
+                        files_loaded.append(f"COMPLETO: {main_file.name}")
+                        logger.info(f"Planilha principal carregada com {len(df)} linhas")
+                    else:
+                        logger.warning(f"Planilha {main_file.name} não tem colunas válidas")
+                        
+                except Exception as e:
+                    logger.error(f"Erro ao carregar {main_file.name}: {str(e)}")
+            
+            # Carregar outras planilhas de entrada se existirem
+            for file_path in inflow_dir.glob("*entrada*.xlsx"):
+                if file_path.name != "base_de_dados_empresa_longa.xlsx":  # Evitar duplicação
+                    try:
+                        logger.info(f"Carregando planilha de entrada: {file_path.name}")
+                        df = pd.read_excel(file_path)
+                        
+                        # Verificar se tem colunas de entrada
+                        if 'VALOR' in df.columns and 'DATA' in df.columns:
+                            # Adicionar nome do arquivo para debug
+                            df['arquivo_origem'] = file_path.name
+                            df['tipo_transacao'] = 'entrada'
+                            all_data.append(df)
+                            files_loaded.append(f"ENTRADA: {file_path.name}")
+                        else:
+                            logger.warning(f"Planilha {file_path.name} não tem colunas de entrada válidas")
+                            
+                    except Exception as e:
+                        logger.error(f"Erro ao carregar {file_path.name}: {str(e)}")
+                        continue
+        
+        if not all_data:
+            logger.warning("Nenhuma planilha válida foi carregada")
+            return None
+        
+        # Concatenar todos os dados
+        df_combined = pd.concat(all_data, ignore_index=True)
+        logger.info(f"Carregadas {len(files_loaded)} planilhas: {files_loaded}")
+        logger.info(f"Total de linhas: {len(df_combined)}")
+        
+        # Processar os dados usando a função existente
+        df_processed = processar_dados(df_combined, filename="planilhas_combined")
+        
+        return df_processed
+        
+    except Exception as e:
+        logger.error(f"Erro ao carregar dados das planilhas: {str(e)}")
+        traceback.print_exc()
+        return None
+
 # --- Endpoints da API ---
 
 @router.get("/key-business-events")
@@ -288,18 +400,25 @@ async def get_key_business_events():
     popular a interface de simulação de eventos.
     """
     try:
-        # Se não há dados reais, usa dados mock
-        if state.global_processed_df is None or state.global_processed_df.empty:
-            logger.warning("⚠️  Nenhum dado processado disponível, usando dados mock para eventos de negócio")
+        # Primeiro, tenta carregar dados reais das planilhas de saída e entrada
+        logger.info("Tentando carregar dados reais das planilhas...")
+        real_business_data = load_real_business_data()
+        
+        if real_business_data is not None and not real_business_data.empty:
+            logger.info("Dados reais das planilhas carregados com sucesso!")
+            events = identify_key_business_events(real_business_data, top_n=5)
+        elif state.global_processed_df is not None and not state.global_processed_df.empty:
+            logger.info("Usando dados processados do estado global")
+            events = identify_key_business_events(state.global_processed_df, top_n=5)
+        else:
+            logger.warning("Nenhum dado real disponível, usando dados mock")
             mock_historical_df = create_mock_historical_data(180)
             events = identify_key_business_events(mock_historical_df, top_n=5)
-        else:
-            events = identify_key_business_events(state.global_processed_df, top_n=5)
         
         return events
         
     except Exception as e:
-        logger.error(f"❌ Erro ao analisar eventos de negócio: {str(e)}")
+        logger.error(f"Erro ao analisar eventos de negócio: {str(e)}")
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Erro ao analisar eventos de negócio: {str(e)}")
 

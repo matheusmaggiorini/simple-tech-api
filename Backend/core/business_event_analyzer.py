@@ -118,7 +118,8 @@ def identify_key_business_events(df: pd.DataFrame, top_n: int = 5):
             val = row['saida']
             if pd.notna(val):
                 text = str(val).strip()
-                if text and not re.fullmatch(r"[-+]?\d+(?:[.,]\d+)?", text):
+                # Se não é numérico e não está vazio, é provavelmente o nome do fornecedor
+                if text and not re.fullmatch(r"[-+]?\d+(?:[.,]\d+)?", text) and text.lower() not in ['nan', 'none', '']:
                     return text
         
         # Se SAIDA não está disponível ou é numérica, tenta outras colunas textuais
@@ -128,7 +129,7 @@ def identify_key_business_events(df: pd.DataFrame, top_n: int = 5):
                 if pd.isna(val):
                     continue
                 text = str(val).strip()
-                if not text:
+                if not text or text.lower() in ['nan', 'none']:
                     continue
                 # Ignora strings puramente numéricas
                 if re.fullmatch(r"[-+]?\d+(?:[.,]\d+)?", text):
