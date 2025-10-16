@@ -2,14 +2,14 @@
   "regions": ["gru1"],
   "builds": [
     {
-      "src": "api/main.py",
+      "src": "Backend/api/main.py",
       "use": "@vercel/python"
     }
   ],
   "routes": [
     {
       "src": "/(.*)",
-      "dest": "api/main.py"
+      "dest": "Backend/api/main.py"
     }
   ]
 }
