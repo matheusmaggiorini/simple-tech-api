@@ -30,7 +30,7 @@ def _split_inflow_description_with_quantities(descricao: str):
 def identify_key_business_events(df: pd.DataFrame, top_n: int = 5):
     """
     Analisa o DataFrame de fluxo de caixa para identificar os principais
-    clientes (entradas) e custos (saídas) com base na frequência e no volume.
+    produtos (entradas) e custos (saídas) com base na frequência e no volume.
 
     Para entradas, interpreta "N X PRODUTO" dentro da descrição.
     Para saídas, tenta identificar fornecedor/forma/tipo como nome do custo.

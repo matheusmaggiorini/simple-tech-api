@@ -391,31 +391,249 @@ def load_real_business_data():
         traceback.print_exc()
         return None
 
+def load_key_business_events_from_excel():
+    """
+    Carrega dados reais das planilhas de saída e entrada para identificar os principais fornecedores e clientes.
+    Retorna dados no formato esperado pelo frontend.
+    """
+    try:
+        import pandas as pd
+        from pathlib import Path
+        
+        # Caminho para as planilhas (usando caminho absoluto)
+        import os
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        data_dir = Path(current_dir).parent.parent / "data"
+        outflow_dir = data_dir / "dados_de_saida"
+        inflow_file = data_dir / "Planilha_Entradas.xls"
+        
+        result_outflows = []
+        result_inflows = []
+        
+        # === CARREGAR DADOS DE SAÍDA (FORNECEDORES) ===
+        if outflow_dir.exists():
+            logger.info(f"Carregando planilhas de saída de: {outflow_dir}")
+            all_outflows = []
+            files_loaded = []
+            
+            # Carregar todas as planilhas de saída
+            for file_path in outflow_dir.glob("*.xlsx"):
+                try:
+                    logger.info(f"Carregando planilha de saída: {file_path.name}")
+                    df = pd.read_excel(file_path)
+                    
+                    # Verificar se tem as colunas necessárias (SAIDA, VALOR, DATA)
+                    required_cols = ['SAIDA', 'VALOR', 'DATA']
+                    missing_cols = [col for col in required_cols if col not in df.columns]
+                    
+                    if missing_cols:
+                        logger.warning(f"Planilha {file_path.name} não tem colunas: {missing_cols}")
+                        continue
+                    
+                    # Filtrar linhas válidas (remover NaN, valores vazios)
+                    df = df.dropna(subset=['SAIDA', 'VALOR'])
+                    df = df[df['SAIDA'].astype(str).str.strip() != '']
+                    df = df[df['SAIDA'].astype(str).str.lower() != 'nan']
+                    df = df[df['VALOR'] > 0]
+                    
+                    if len(df) > 0:
+                        all_outflows.append(df)
+                        files_loaded.append(file_path.name)
+                        logger.info(f"Planilha {file_path.name} carregada com {len(df)} linhas válidas")
+                    
+                except Exception as e:
+                    logger.error(f"Erro ao carregar {file_path.name}: {str(e)}")
+                    continue
+            
+            if all_outflows:
+                # Concatenar todos os dados de saída
+                df_combined = pd.concat(all_outflows, ignore_index=True)
+                logger.info(f"Carregadas {len(files_loaded)} planilhas de saída: {files_loaded}")
+                logger.info(f"Total de linhas de saída: {len(df_combined)}")
+                
+                # Normalizar nomes dos fornecedores (maiúsculas/minúsculas)
+                df_combined['SAIDA_NORMALIZED'] = df_combined['SAIDA'].astype(str).str.strip().str.title()
+                
+                # Agrupar por fornecedor normalizado e calcular estatísticas
+                grouped = df_combined.groupby('SAIDA_NORMALIZED').agg({
+                    'VALOR': ['sum', 'count', 'mean']
+                }).reset_index()
+                
+                # Renomear colunas para facilitar o acesso
+                grouped.columns = ['name', 'total_amount', 'frequency', 'avg_amount']
+                
+                # Filtrar fornecedores com nomes válidos (não genéricos)
+                grouped = grouped[~grouped['name'].astype(str).str.contains('MATERIAIS DIVERSOS', case=False, na=False)]
+                grouped = grouped[~grouped['name'].astype(str).str.contains('nan', case=False, na=False)]
+                grouped = grouped[grouped['name'].astype(str).str.strip() != '']
+                
+                # Ordenar por total_amount (decrescente) e pegar top 5
+                key_outflows = grouped.sort_values('total_amount', ascending=False).head(5)
+                
+                # Converter para formato esperado pelo frontend
+                for _, row in key_outflows.iterrows():
+                    result_outflows.append({
+                        "name": str(row['name']).strip(),
+                        "total_amount": float(row['total_amount']),
+                        "frequency": int(row['frequency']),
+                        "avg_amount": float(row['avg_amount'])
+                    })
+                
+                logger.info(f"Identificados {len(result_outflows)} principais fornecedores")
+                for outflow in result_outflows:
+                    logger.info(f"  - {outflow['name']}: R$ {outflow['total_amount']:.2f} ({outflow['frequency']} transações)")
+        
+        # === CARREGAR DADOS DE ENTRADA (PRODUTOS) ===
+        if inflow_file.exists():
+            logger.info(f"Carregando planilha de entrada: {inflow_file.name}")
+            try:
+                df_inflow = pd.read_excel(inflow_file)
+                
+                # Verificar se tem as colunas necessárias para análise de produtos
+                required_cols = ['Data', 'Descrição', 'Valor Pago']
+                missing_cols = [col for col in required_cols if col not in df_inflow.columns]
+                
+                if missing_cols:
+                    logger.warning(f"Planilha de entrada não tem colunas: {missing_cols}")
+                else:
+                    # Filtrar apenas vendas válidas (não canceladas)
+                    df_inflow = df_inflow[df_inflow['Cancelado'] != 'Sim']
+                    df_inflow = df_inflow.dropna(subset=['Descrição', 'Valor Pago'])
+                    df_inflow = df_inflow[df_inflow['Valor Pago'] > 0]
+                    
+                    if len(df_inflow) > 0:
+                        logger.info(f"Planilha de entrada carregada com {len(df_inflow)} vendas válidas")
+                        
+                        # Processar produtos das descrições usando a lógica do business_event_analyzer
+                        from core.business_event_analyzer import _split_inflow_description_with_quantities
+                        from core.data_processing import processar_descricao_multiplos_produtos
+                        
+                        # Construir mapa de preços unitários conhecidos
+                        precos_unitarios_por_produto = {}
+                        for _, row in df_inflow.iterrows():
+                            valor_total = float(row.get('Valor Pago', 0) or 0)
+                            desc = row.get('Descrição', '')
+                            itens = _split_inflow_description_with_quantities(desc)
+                            
+                            # Se é um item único, calcula o preço unitário
+                            if len(itens) == 1:
+                                qtd, produto = itens[0]
+                                if qtd > 0 and produto:
+                                    preco_unitario = valor_total / qtd
+                                    if produto not in precos_unitarios_por_produto:
+                                        precos_unitarios_por_produto[produto] = []
+                                    precos_unitarios_por_produto[produto].append(preco_unitario)
+                        
+                        # Calcula preços médios para produtos com múltiplas transações
+                        for produto in precos_unitarios_por_produto:
+                            if len(precos_unitarios_por_produto[produto]) > 1:
+                                precos_unitarios_por_produto[produto] = [sum(precos_unitarios_por_produto[produto]) / len(precos_unitarios_por_produto[produto])]
+                            else:
+                                precos_unitarios_por_produto[produto] = precos_unitarios_por_produto[produto]
+                        
+                        # Converte para formato esperado pela função processar_descricao_multiplos_produtos
+                        precos_map = {produto: precos[0] for produto, precos in precos_unitarios_por_produto.items()}
+                        
+                        # Processar todas as transações para extrair produtos individuais
+                        expanded_rows = []
+                        for _, row in df_inflow.iterrows():
+                            valor_total = float(row.get('Valor Pago', 0) or 0)
+                            desc = row.get('Descrição', '')
+                            
+                            # Usa a função para processar descrições com múltiplos produtos
+                            itens_processados = processar_descricao_multiplos_produtos(desc, valor_total, precos_map)
+                            
+                            for qtd, produto, valor_item in itens_processados:
+                                expanded_rows.append({
+                                    'produto': produto,
+                                    'valor': valor_item,
+                                    'quantidade': qtd
+                                })
+                        
+                        if expanded_rows:
+                            # Criar DataFrame expandido e agrupar por produto
+                            df_expanded = pd.DataFrame(expanded_rows)
+                            
+                            # Agrupar por produto e calcular estatísticas
+                            grouped_products = df_expanded.groupby('produto').agg({
+                                'valor': ['sum', 'count'],
+                                'quantidade': 'sum'
+                            }).reset_index()
+                            
+                            # Renomear colunas
+                            grouped_products.columns = ['name', 'total_amount', 'frequency', 'total_quantity']
+                            
+                            # Filtrar produtos com nomes válidos
+                            grouped_products = grouped_products[grouped_products['name'].astype(str).str.strip() != '']
+                            grouped_products = grouped_products[~grouped_products['name'].astype(str).str.contains('nan', case=False, na=False)]
+                            
+                            # Ordenar por total_amount (decrescente) e pegar top 5
+                            key_inflows = grouped_products.sort_values('total_amount', ascending=False).head(5)
+                            
+                            # Converter para formato esperado pelo frontend
+                            for _, row in key_inflows.iterrows():
+                                result_inflows.append({
+                                    "name": str(row['name']).strip(),
+                                    "total_amount": float(row['total_amount']),
+                                    "frequency": int(row['frequency']),
+                                    "avg_amount": float(row['total_amount'] / row['frequency']) if row['frequency'] > 0 else 0.0
+                                })
+                            
+                            logger.info(f"Identificados {len(result_inflows)} principais produtos")
+                            for inflow in result_inflows:
+                                logger.info(f"  - {inflow['name']}: R$ {inflow['total_amount']:.2f} ({inflow['frequency']} transações)")
+                        else:
+                            logger.warning("Nenhum produto válido encontrado nas descrições")
+                
+            except Exception as e:
+                logger.error(f"Erro ao carregar planilha de entrada: {str(e)}")
+        
+        # Retornar resultado combinado
+        if result_outflows or result_inflows:
+            return {
+                "key_outflows": result_outflows,
+                "key_inflows": result_inflows
+            }
+        else:
+            logger.warning("Nenhum dado válido foi carregado")
+            return None
+        
+    except Exception as e:
+        logger.error(f"Erro ao carregar eventos de negócio das planilhas: {str(e)}")
+        traceback.print_exc()
+        return None
+
 # --- Endpoints da API ---
 
 @router.get("/key-business-events")
 async def get_key_business_events():
     """
-    Endpoint: Retorna a lista de principais clientes e custos para
+    Endpoint: Retorna a lista de principais produtos (receitas) e custos para
     popular a interface de simulação de eventos.
     """
     try:
-        # Primeiro, tenta carregar dados reais das planilhas de saída e entrada
-        logger.info("Tentando carregar dados reais das planilhas...")
-        real_business_data = load_real_business_data()
+        # Primeiro, tenta carregar dados reais das planilhas de saída
+        logger.info("=== INICIANDO CARREGAMENTO DE DADOS REAIS ===")
+        logger.info("Tentando carregar dados reais das planilhas de saída...")
+        excel_events = load_key_business_events_from_excel()
         
-        if real_business_data is not None and not real_business_data.empty:
-            logger.info("Dados reais das planilhas carregados com sucesso!")
-            events = identify_key_business_events(real_business_data, top_n=5)
-        elif state.global_processed_df is not None and not state.global_processed_df.empty:
+        if excel_events is not None:
+            logger.info("=== DADOS REAIS CARREGADOS COM SUCESSO! ===")
+            logger.info(f"Retornando {len(excel_events.get('key_outflows', []))} fornecedores")
+            return excel_events
+        else:
+            logger.warning("=== FALHA AO CARREGAR DADOS REAIS ===")
+        
+        # Se não conseguiu carregar das planilhas, tenta dados processados do estado global
+        if state.global_processed_df is not None and not state.global_processed_df.empty:
             logger.info("Usando dados processados do estado global")
             events = identify_key_business_events(state.global_processed_df, top_n=5)
+            return events
         else:
             logger.warning("Nenhum dado real disponível, usando dados mock")
             mock_historical_df = create_mock_historical_data(180)
             events = identify_key_business_events(mock_historical_df, top_n=5)
-        
-        return events
+            return events
         
     except Exception as e:
         logger.error(f"Erro ao analisar eventos de negócio: {str(e)}")

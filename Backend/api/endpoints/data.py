@@ -637,16 +637,33 @@ async def upload_excel_bundle(file: UploadFile | None = File(None), files: list[
 
 
 @router.get("/view_processed")
-async def view_processed_data(limit: int = 50):
+async def view_processed_data(limit: int = 50, start_date: str = None, end_date: str = None, order: str = "asc"):
     """Retorna uma prévia dos dados de fluxo de caixa carregados."""
     if state.global_processed_df is None or state.global_processed_df.empty:
         raise HTTPException(status_code=404, detail="Nenhum dado de fluxo de caixa processado.")
 
-    df_src = state.global_processed_df
+    df_src = state.global_processed_df.copy()
+    
+    # Filtrar por data se especificado
+    if start_date or end_date:
+        if 'data' in df_src.columns:
+            df_src['data'] = pd.to_datetime(df_src['data'])
+            if start_date:
+                df_src = df_src[df_src['data'] >= pd.to_datetime(start_date)]
+            if end_date:
+                df_src = df_src[df_src['data'] <= pd.to_datetime(end_date)]
+    
+    # Ordenar por data
+    if 'data' in df_src.columns:
+        df_src = df_src.sort_values('data', ascending=(order == "asc"))
+    
+    # Aplicar limite
     if limit is None or limit <= 0 or limit >= len(df_src):
         df_copy = df_src.copy()
     else:
         df_copy = df_src.head(limit).copy()
+    
+    # Converter datas para string
     for col in df_copy.select_dtypes(include=['datetime64[ns]']).columns:
         df_copy[col] = df_copy[col].dt.strftime('%Y-%m-%d')
     df_copy = df_copy.replace({np.nan: None})
@@ -664,6 +681,112 @@ async def get_statistics():
     
     return JSONResponse(content=state.global_historical_stats)
 
+
+@router.get("/balance_evolution")
+async def get_balance_evolution():
+    """Retorna dados para evolução do saldo ao longo do tempo.
+    Retorna [{data: 'YYYY-MM-DD', saldo: float}] ordenado por data.
+    Filtra para mostrar apenas pontos significativos da evolução."""
+    if state.global_processed_df is None or state.global_processed_df.empty:
+        raise HTTPException(status_code=404, detail="Nenhum dado processado.")
+
+    df = state.global_processed_df.copy()
+    if 'data' not in df.columns or 'saldo' not in df.columns:
+        raise HTTPException(status_code=400, detail="Colunas 'data' ou 'saldo' ausentes após processamento.")
+    
+    # Garantir que a coluna data é datetime
+    df['data'] = pd.to_datetime(df['data'])
+    
+    # Ordenar por data
+    df = df.sort_values('data')
+    
+    # Agrupar por data e pegar o último saldo de cada dia
+    daily_balance = df.groupby(df['data'].dt.date).agg({
+        'saldo': 'last'
+    }).reset_index()
+    
+    # Filtrar para mostrar apenas pontos significativos da evolução
+    # Remover pontos onde o saldo não mudou significativamente
+    daily_balance = daily_balance.copy()
+    daily_balance['saldo_anterior'] = daily_balance['saldo'].shift(1)
+    daily_balance['mudanca_saldo'] = abs(daily_balance['saldo'] - daily_balance['saldo_anterior'])
+    
+    # Manter apenas pontos onde há mudança significativa (> 1% do saldo anterior ou > 1000)
+    threshold = daily_balance['saldo_anterior'].abs() * 0.01  # 1% do saldo anterior
+    threshold = threshold.clip(lower=1000)  # Mínimo de 1000
+    
+    # Sempre manter o primeiro e último ponto
+    significant_points = daily_balance[
+        (daily_balance['mudanca_saldo'] >= threshold) |
+        (daily_balance.index == 0) |
+        (daily_balance.index == len(daily_balance) - 1)
+    ].copy()
+    
+    # Se ainda houver muitos pontos, reduzir para no máximo 50 pontos
+    if len(significant_points) > 50:
+        # Pegar pontos uniformemente distribuídos
+        step = len(significant_points) // 50
+        significant_points = significant_points.iloc[::step]
+    
+    # Converter para formato esperado pelo frontend
+    result = []
+    for _, row in significant_points.iterrows():
+        result.append({
+            'data': row['data'].strftime('%Y-%m-%d'),
+            'saldo': float(row['saldo']) if not pd.isna(row['saldo']) else 0.0
+        })
+    
+    return JSONResponse(content=result)
+
+@router.get("/balance_evolution_simple")
+async def get_balance_evolution_simple():
+    """Retorna uma versão simplificada da evolução do saldo.
+    Mostra apenas pontos-chave para uma visualização mais clara."""
+    if state.global_processed_df is None or state.global_processed_df.empty:
+        raise HTTPException(status_code=404, detail="Nenhum dado processado.")
+
+    df = state.global_processed_df.copy()
+    if 'data' not in df.columns or 'saldo' not in df.columns:
+        raise HTTPException(status_code=400, detail="Colunas 'data' ou 'saldo' ausentes após processamento.")
+    
+    # Garantir que a coluna data é datetime
+    df['data'] = pd.to_datetime(df['data'])
+    
+    # Ordenar por data
+    df = df.sort_values('data')
+    
+    # Agrupar por semana para reduzir a quantidade de pontos
+    df['semana'] = df['data'].dt.to_period('W')
+    weekly_balance = df.groupby('semana').agg({
+        'saldo': 'last',
+        'data': 'last'  # Pegar a última data da semana
+    }).reset_index()
+    
+    # Se ainda houver muitos pontos, agrupar por mês
+    if len(weekly_balance) > 30:
+        df['mes'] = df['data'].dt.to_period('M')
+        monthly_balance = df.groupby('mes').agg({
+            'saldo': 'last',
+            'data': 'last'  # Pegar a última data do mês
+        }).reset_index()
+        
+        # Converter para formato esperado pelo frontend
+        result = []
+        for _, row in monthly_balance.iterrows():
+            result.append({
+                'data': row['data'].strftime('%Y-%m-%d'),
+                'saldo': float(row['saldo']) if not pd.isna(row['saldo']) else 0.0
+            })
+    else:
+        # Usar dados semanais
+        result = []
+        for _, row in weekly_balance.iterrows():
+            result.append({
+                'data': row['data'].strftime('%Y-%m-%d'),
+                'saldo': float(row['saldo']) if not pd.isna(row['saldo']) else 0.0
+            })
+    
+    return JSONResponse(content=result)
 
 @router.get("/monthly_summary")
 async def get_monthly_summary(limit: int | None = None):
@@ -689,3 +812,55 @@ async def get_monthly_summary(limit: int | None = None):
     if limit and limit > 0:
         grouped = grouped.head(limit)
     return JSONResponse(content=grouped.to_dict(orient='records'))
+
+@router.get("/yearly_monthly_data")
+async def get_yearly_monthly_data():
+    """Retorna dados mensais agrupados por ano para a visão anual.
+    Retorna [{ano: int, mes: int, mes_ano: str, total_entradas: float, total_saidas: float, fluxo_liquido: float, saldo_final_mes: float}]."""
+    if state.global_processed_df is None or state.global_processed_df.empty:
+        raise HTTPException(status_code=404, detail="Nenhum dado processado.")
+
+    df = state.global_processed_df.copy()
+    if 'data' not in df.columns:
+        raise HTTPException(status_code=400, detail="Coluna 'data' ausente após processamento.")
+    
+    # Garantir que a coluna data é datetime
+    df['data'] = pd.to_datetime(df['data'])
+    
+    # Adicionar colunas de ano e mês
+    df['ano'] = df['data'].dt.year
+    df['mes'] = df['data'].dt.month
+    df['mes_ano'] = df['data'].dt.to_period('M').astype(str)
+    
+    # Garantir colunas numéricas
+    df['entrada_num'] = pd.to_numeric(df.get('entrada', 0), errors='coerce').fillna(0)
+    df['saida_num'] = pd.to_numeric(df.get('saida', 0), errors='coerce').fillna(0)
+    
+    # Agrupar por ano e mês
+    grouped = df.groupby(['ano', 'mes', 'mes_ano']).agg({
+        'entrada_num': 'sum',
+        'saida_num': 'sum',
+        'saldo': 'last'  # Último saldo do mês
+    }).reset_index()
+    
+    # Calcular fluxo líquido e renomear colunas
+    grouped['fluxo_liquido'] = grouped['entrada_num'] - grouped['saida_num']
+    grouped['saldo_final_mes'] = grouped['saldo']
+    
+    # Converter para formato esperado pelo frontend
+    result = []
+    for _, row in grouped.iterrows():
+        result.append({
+            'ano': int(row['ano']),
+            'mes': int(row['mes']),
+            'mes_ano': str(row['mes_ano']),
+            'total_entradas': float(row['entrada_num']),
+            'total_saidas': float(row['saida_num']),
+            'fluxo_liquido': float(row['fluxo_liquido']),
+            'saldo_final_mes': float(row['saldo_final_mes']) if not pd.isna(row['saldo_final_mes']) else 0.0
+        })
+    
+    # Ordenar por ano e mês
+    result.sort(key=lambda x: (x['ano'], x['mes']))
+    
+    return JSONResponse(content=result)
