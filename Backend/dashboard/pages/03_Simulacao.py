@@ -121,12 +121,39 @@ if st.button("Executar Simulação de Cenários", type="primary"):
                     # Métricas principais
                     st.subheader("📊 Resultados da Simulação")
                     
-                    col1, col2, col3, col4 = st.columns(4)
+                    col1, col2, col3 = st.columns(3)
+                    
+                    with col1:
+                        valor_pessimista = summary.get("valor_minimo_esperado", 0)
+                        st.metric(
+                            "Cenário Pessimista (25%)",
+                            f"R$ {valor_pessimista:,.2f}",
+                            help="Apenas 25% dos casos serão piores que este"
+                        )
+                    
+                    with col2:
+                        valor_provavel = summary.get("valor_mediano_esperado", 0)
+                        st.metric(
+                            "Cenário Mais Provável (50%)",
+                            f"R$ {valor_provavel:,.2f}",
+                            help="Valor mediano - 50% acima ou abaixo"
+                        )
+                    
+                    with col3:
+                        valor_otimista = summary.get("valor_maximo_esperado", 0)
+                        st.metric(
+                            "Cenário Otimista (75%)",
+                            f"R$ {valor_otimista:,.2f}",
+                            help="Apenas 25% dos casos serão melhores que este"
+                        )
+                    
+                    # Métricas de risco em uma segunda linha
+                    col1, col2 = st.columns(2)
                     
                     with col1:
                         prob_negativo = summary.get("prob_saldo_negativo_final", 0) * 100
                         st.metric(
-                            "Prob. Saldo Negativo (Final)",
+                            "Probabilidade Saldo Negativo (Final)",
                             f"{prob_negativo:.1f}%",
                             delta=f"{prob_negativo:.1f}%",
                             delta_color="inverse"
@@ -135,24 +162,10 @@ if st.button("Executar Simulação de Cenários", type="primary"):
                     with col2:
                         prob_qualquer = summary.get("prob_saldo_negativo_qualquer_momento", 0) * 100
                         st.metric(
-                            "Prob. Saldo Negativo (Qualquer Momento)",
+                            "Probabilidade Saldo Negativo (Qualquer Momento)",
                             f"{prob_qualquer:.1f}%",
                             delta=f"{prob_qualquer:.1f}%",
                             delta_color="inverse"
-                        )
-                    
-                    with col3:
-                        valor_min = summary.get("valor_minimo_esperado", 0)
-                        st.metric(
-                            "Cenário Pessimista (5%)",
-                            f"R$ {valor_min:,.2f}"
-                        )
-                    
-                    with col4:
-                        valor_max = summary.get("valor_maximo_esperado", 0)
-                        st.metric(
-                            "Cenário Otimista (95%)",
-                            f"R$ {valor_max:,.2f}"
                         )
                     
                     # Gráfico de distribuição (simulado)
@@ -248,8 +261,9 @@ with st.expander("💡 Dicas para Usar a Simulação"):
     st.markdown("""
     **Como interpretar os resultados:**
     - **Probabilidade de Saldo Negativo**: Chance de ficar no vermelho
-    - **Cenário Pessimista (5%)**: Apenas 5% dos casos serão piores que isso
-    - **Cenário Otimista (95%)**: Apenas 5% dos casos serão melhores que isso
+    - **Cenário Pessimista (25%)**: Apenas 25% dos casos serão piores que isso
+    - **Cenário Mais Provável (50%)**: Valor mediano - metade dos casos acima, metade abaixo
+    - **Cenário Otimista (75%)**: Apenas 25% dos casos serão melhores que isso
     
     **Recomendações de configuração:**
     - **Poucos dados históricos**: Use variações maiores (15-30%)

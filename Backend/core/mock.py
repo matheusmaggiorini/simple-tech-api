@@ -276,8 +276,9 @@ class ScenarioSimulatorMock:
                 'saldo_min': float(saldos.min()),
                 'saldo_max': float(saldos.max()),
                 'prob_saldo_negativo': float((saldos < 0).mean()),
-                'percentil_5': float(saldos.quantile(0.05)),
-                'percentil_95': float(saldos.quantile(0.95)),
+                'percentil_25': float(saldos.quantile(0.25)),  # Cenário pessimista
+                'percentil_50': float(saldos.quantile(0.50)),  # Cenário mais provável
+                'percentil_75': float(saldos.quantile(0.75)),  # Cenário otimista
                 'num_simulacoes': len(df_resultados)
             }
             

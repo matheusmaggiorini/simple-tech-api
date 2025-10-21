@@ -17,17 +17,23 @@ MACROECONOMIC_SCENARIOS = {
     "otimista": {
         "revenue_change": 0.15,  # +15%
         "cost_change": -0.10,    # -10%
-        "description": "Cenário otimista: aumento de receita e redução de custos"
+        "description": "Cenário otimista (percentil 75): aumento de receita e redução de custos"
     },
-    "conservador": {
+    "mais_provavel": {
         "revenue_change": 0.05,  # +5%
         "cost_change": 0.03,     # +3%
-        "description": "Cenário conservador: crescimento moderado com aumento leve de custos"
+        "description": "Cenário mais provável (percentil 50): crescimento moderado com aumento leve de custos"
     },
     "pessimista": {
         "revenue_change": -0.10, # -10%
         "cost_change": 0.20,     # +20%
-        "description": "Cenário pessimista: redução de receita e aumento significativo de custos"
+        "description": "Cenário pessimista (percentil 25): redução de receita e aumento significativo de custos"
+    },
+    # Mantém compatibilidade com nome antigo
+    "conservador": {
+        "revenue_change": 0.05,  # +5%
+        "cost_change": 0.03,     # +3%
+        "description": "Cenário mais provável (percentil 50): crescimento moderado com aumento leve de custos"
     }
 }
 

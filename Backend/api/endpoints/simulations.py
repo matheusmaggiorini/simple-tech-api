@@ -61,8 +61,8 @@ class SimulationRequest(BaseModel):
         if self.simulation_type == 'macroeconomic':
             if not self.scenario_type:
                 raise ValueError('scenario_type é obrigatório para a simulação macroeconômica.')
-            if self.scenario_type not in ['otimista', 'conservador', 'pessimista']:
-                raise ValueError(f'Tipo de cenário inválido: {self.scenario_type}. Use otimista, conservador ou pessimista.')
+            if self.scenario_type not in ['otimista', 'mais_provavel', 'pessimista', 'conservador']:
+                raise ValueError(f'Tipo de cenário inválido: {self.scenario_type}. Use otimista, mais_provavel ou pessimista.')
         return self
 
 class LoanParams(BaseModel):
@@ -842,7 +842,7 @@ async def get_simulation_status():
             "module": "simulations",
             "status": "active",
             "has_data": has_data,
-            "available_scenarios": ["otimista", "conservador", "pessimista"],
+            "available_scenarios": ["pessimista", "mais_provavel", "otimista"],
             "features": ["macroeconomic_simulation", "event_simulation"]
         }
         
@@ -860,3 +860,93 @@ async def get_simulation_status():
             "error": str(e),
             "has_data": False
         }
+
+class MonteCarloRequest(BaseModel):
+    """Modelo de requisição para simulação Monte Carlo."""
+    variacao_entrada: float = 0.1
+    variacao_saida: float = 0.1
+    dias_simulacao: int = 30
+    num_simulacoes: int = 1000
+    saldo_inicial_simulacao: Optional[float] = None
+
+@router.post("/scenarios")
+async def execute_monte_carlo_simulation(request: MonteCarloRequest):
+    """
+    Endpoint para executar simulação Monte Carlo com 3 cenários (pessimista, mais provável, otimista).
+    Retorna os percentis 25, 50 e 75 conforme solicitado.
+    """
+    try:
+        from core.mock import ScenarioSimulatorMock
+        
+        # Verifica se há dados carregados
+        if state.global_processed_df is None or state.global_processed_df.empty:
+            logger.warning("Nenhum dado histórico, usando valores padrão para simulação")
+            stats = {
+                'entrada_media': 1000,
+                'entrada_std': 200,
+                'saida_media': 800,
+                'saida_std': 150,
+                'saldo_atual': 5000,
+                'periodo_dias': 30
+            }
+        else:
+            # Calcula estatísticas dos dados reais
+            stats = ScenarioSimulatorMock.calcular_estatisticas_historicas(state.global_processed_df)
+        
+        # Gera parâmetros da simulação
+        params = ScenarioSimulatorMock.gerar_parametros_simulacao(
+            stats=stats,
+            variacao_entrada=request.variacao_entrada,
+            variacao_saida=request.variacao_saida,
+            dias_simulacao=request.dias_simulacao,
+            num_simulacoes=request.num_simulacoes,
+            saldo_inicial=request.saldo_inicial_simulacao
+        )
+        
+        # Executa a simulação Monte Carlo
+        df_resultados, _ = ScenarioSimulatorMock.executar_simulacao_monte_carlo(params)
+        
+        if df_resultados.empty:
+            raise HTTPException(status_code=500, detail="Simulação não gerou resultados")
+        
+        # Analisa probabilidades
+        analise = ScenarioSimulatorMock.analisar_probabilidades(df_resultados)
+        
+        # Retorna resultado com 3 cenários (percentis 25, 50, 75)
+        return {
+            "results_summary": {
+                "prob_saldo_negativo_final": analise.get("prob_saldo_negativo", 0),
+                "prob_saldo_negativo_qualquer_momento": analise.get("prob_saldo_negativo", 0),
+                "valor_minimo_esperado": analise.get("percentil_25", 0),  # Cenário pessimista (25%)
+                "valor_mediano_esperado": analise.get("percentil_50", 0),  # Cenário mais provável (50%)
+                "valor_maximo_esperado": analise.get("percentil_75", 0),  # Cenário otimista (75%)
+                "saldo_medio": analise.get("saldo_medio", 0),
+                "saldo_std": analise.get("saldo_std", 0),
+                "num_simulacoes": analise.get("num_simulacoes", 0)
+            },
+            "scenarios": {
+                "pessimista": {
+                    "nome": "Cenário Pessimista",
+                    "percentil": 25,
+                    "valor": analise.get("percentil_25", 0),
+                    "descricao": "Apenas 25% dos casos serão piores que este cenário"
+                },
+                "mais_provavel": {
+                    "nome": "Cenário Mais Provável",
+                    "percentil": 50,
+                    "valor": analise.get("percentil_50", 0),
+                    "descricao": "Valor mediano - 50% dos casos estarão acima ou abaixo"
+                },
+                "otimista": {
+                    "nome": "Cenário Otimista",
+                    "percentil": 75,
+                    "valor": analise.get("percentil_75", 0),
+                    "descricao": "Apenas 25% dos casos serão melhores que este cenário"
+                }
+            }
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ Erro ao executar simulação Monte Carlo: {str(e)}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Erro ao executar simulação: {str(e)}")
