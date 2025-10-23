@@ -60,3 +60,16 @@ async def get_feature_importance():
         )
     
     return state.global_feature_importance
+
+@router.get("/cashflow/model_metrics")
+async def get_model_metrics():
+    """
+    Retorna as métricas de performance do modelo treinado (MAE, R², RMSE).
+    """
+    if state.global_model_metrics is None:
+        raise HTTPException(
+            status_code=404,
+            detail="As métricas do modelo ainda não foram geradas. Execute a previsão primeiro para treinar o modelo."
+        )
+    
+    return state.global_model_metrics
