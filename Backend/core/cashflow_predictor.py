@@ -298,7 +298,7 @@ class CashflowPredictor:
             }
 
             # Garante presença das colunas de categorias usadas no treino (preenche com 0 para futuro)
-        for cat in self.original_categories:
+            for cat in self.original_categories:
                 row_dict.setdefault(cat, 0)
 
             # Assegura que todas as colunas esperadas existem (faltantes -> 0)
