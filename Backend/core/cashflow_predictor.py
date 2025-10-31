@@ -5,9 +5,14 @@ from xgboost import XGBRegressor
 from sklearn.metrics import mean_absolute_error, r2_score, mean_squared_error
 import os
 import sys
+import logging
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from api.endpoints import state
+
+# Configurar logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 class CashflowPredictor:
     def __init__(self):
@@ -128,6 +133,30 @@ class CashflowPredictor:
         self.model.set_params(**best_params)
         self.model.fit(X_train, y_train)
         self.best_model_ = self.model
+
+        # --- Início do Bloco de Validação de Métricas ---
+        logger.info("Calculando métricas de validação no conjunto de teste...")
+
+        try:
+            # 1. Fazer previsões no conjunto de teste (dados que o modelo não viu no treino)
+            y_pred = self.best_model_.predict(X_test)
+
+            # 2. Calcular as métricas
+            mae_val = mean_absolute_error(y_test, y_pred)
+            r2_val = r2_score(y_test, y_pred)
+
+            # 3. Exibir as métricas nos logs
+            logger.info("="*50)
+            logger.info("MÉTRICAS DE VALIDAÇÃO DO MODELO DE PREVISÃO")
+            logger.info(f"  Erro Absoluto Médio (MAE): {mae_val:.2f}")
+            logger.info(f"  Coeficiente R-squared (R²): {r2_val:.4f}")
+            logger.info("="*50)
+            logger.info(f"MAE (Explicação): Em média, as previsões do modelo no conjunto de teste erraram em R$ {mae_val:.2f} por dia.")
+            logger.info(f"R² (Explicação): O modelo consegue explicar {r2_val:.2%} da variabilidade dos dados de fluxo de caixa.")
+
+        except Exception as e:
+            logger.error(f"Erro ao calcular métricas de validação: {e}")
+        # --- Fim do Bloco de Validação de Métricas ---
         
         importances = self.best_model_.feature_importances_
         feature_names = X_train.columns
