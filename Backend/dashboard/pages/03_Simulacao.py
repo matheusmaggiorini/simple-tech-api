@@ -120,11 +120,28 @@ if st.button("Executar Simulação de Cenários", type="primary"):
                 if summary:
                     # Métricas principais
                     st.subheader("📊 Resultados da Simulação")
-                    
-                    col1, col2, col3 = st.columns(3)
+
+                    # Determinar nível de risco com base em P25/P50/P75 e probabilidade
+                    valor_pessimista = summary.get("valor_minimo_esperado", 0)
+                    valor_provavel = summary.get("valor_mediano_esperado", 0)
+                    valor_otimista = summary.get("valor_maximo_esperado", 0)
+                    prob_negativo = summary.get("prob_saldo_negativo_final", 0) * 100
+
+                    if valor_otimista < 0:
+                        nivel_texto = "Risco Crítico"
+                    elif valor_provavel < 0 or prob_negativo >= 40:
+                        nivel_texto = "Risco Alto"
+                    elif valor_pessimista < 0 or prob_negativo >= 15:
+                        nivel_texto = "Risco Médio"
+                    else:
+                        nivel_texto = "Risco Baixo"
+
+                    col0, col1, col2, col3 = st.columns(4)
+
+                    with col0:
+                        st.metric("Nível de Risco", nivel_texto, help="Classificação baseada em P25/P50/P75 e probabilidade")
                     
                     with col1:
-                        valor_pessimista = summary.get("valor_minimo_esperado", 0)
                         st.metric(
                             "Cenário Pessimista (25%)",
                             f"R$ {valor_pessimista:,.2f}",
@@ -132,7 +149,6 @@ if st.button("Executar Simulação de Cenários", type="primary"):
                         )
                     
                     with col2:
-                        valor_provavel = summary.get("valor_mediano_esperado", 0)
                         st.metric(
                             "Cenário Mais Provável (50%)",
                             f"R$ {valor_provavel:,.2f}",
@@ -140,7 +156,6 @@ if st.button("Executar Simulação de Cenários", type="primary"):
                         )
                     
                     with col3:
-                        valor_otimista = summary.get("valor_maximo_esperado", 0)
                         st.metric(
                             "Cenário Otimista (75%)",
                             f"R$ {valor_otimista:,.2f}",
@@ -200,12 +215,24 @@ if st.button("Executar Simulação de Cenários", type="primary"):
                     # Análise de risco
                     st.subheader("🚨 Análise de Risco")
                     
-                    if prob_negativo > 20:
-                        st.error(f"🔴 **Risco Alto**: {prob_negativo:.1f}% de chance de saldo negativo no final do período")
-                    elif prob_negativo > 10:
-                        st.warning(f"🟡 **Risco Médio**: {prob_negativo:.1f}% de chance de saldo negativo no final do período")
+                    # Classificação combinando probabilidade e sinais dos percentis
+                    risco_msg = None
+                    if valor_otimista < 0:
+                        risco_msg = ("🔴 **Risco Crítico**: Mesmo o cenário otimista (P75) é negativo", "error")
+                    elif valor_provavel < 0 or prob_negativo >= 40:
+                        risco_msg = (f"🔴 **Risco Alto**: mediana negativa ou {prob_negativo:.1f}% prob. negativa", "error")
+                    elif valor_pessimista < 0 or prob_negativo >= 15:
+                        risco_msg = (f"🟡 **Risco Médio**: P25 negativo ou {prob_negativo:.1f}% prob. negativa", "warning")
                     else:
-                        st.success(f"🟢 **Risco Baixo**: Apenas {prob_negativo:.1f}% de chance de saldo negativo no final do período")
+                        risco_msg = (f"🟢 **Risco Baixo**: {prob_negativo:.1f}% de chance de saldo negativo", "success")
+                    
+                    msg, level = risco_msg
+                    if level == "error":
+                        st.error(msg)
+                    elif level == "warning":
+                        st.warning(msg)
+                    else:
+                        st.success(msg)
                     
                     # Recomendações
                     st.subheader("💡 Recomendações")
@@ -219,7 +246,7 @@ if st.button("Executar Simulação de Cenários", type="primary"):
                     if prob_qualquer > 25:
                         recomendacoes.append("📅 **Monitore o fluxo diariamente** - há risco de problemas temporários")
                     
-                    if valor_min < -1000:
+                    if valor_pessimista < -1000:
                         recomendacoes.append("🏪 **Considere uma linha de crédito** para cobrir possíveis déficits")
                     
                     if not recomendacoes:

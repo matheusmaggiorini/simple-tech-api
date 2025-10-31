@@ -109,7 +109,7 @@ def run_event_simulation(
     simulation_months: int = 6
 ) -> pd.DataFrame:
     """
-    Versão corrigida da simulação de eventos que garante o retorno das colunas corretas.
+    Versão melhorada da simulação de eventos com projeções mais realistas baseadas em padrões históricos.
     """
     logger.info("INICIANDO SIMULAÇÃO DE EVENTOS DE NEGÓCIO")
     
@@ -143,9 +143,42 @@ def run_event_simulation(
         if 'descricao' not in historical_df.columns:
             historical_df['descricao'] = 'Transação'
         
-        # Calcula médias mensais baseadas nos dados históricos
+        # Calcula estatísticas históricas mais robustas
         last_date = historical_df['data'].max()
         logger.info(f"Data mais recente nos dados: {last_date}")
+        
+        # Agrupa por mês para calcular padrões sazonais
+        historical_df['year_month'] = historical_df['data'].dt.to_period('M')
+        historical_df['month'] = historical_df['data'].dt.month
+        
+        # Calcula totais mensais (não médias diárias) para ser mais realista
+        monthly_totals = historical_df.groupby('year_month').agg({
+            'entrada': 'sum',
+            'saida': 'sum'
+        }).reset_index()
+        
+        monthly_totals['fluxo'] = monthly_totals['entrada'] - monthly_totals['saida']
+        
+        # Calcula padrões sazonais por mês (1-12)
+        monthly_patterns = historical_df.groupby('month').agg({
+            'entrada': ['mean', 'std', 'sum'],
+            'saida': ['mean', 'std', 'sum']
+        }).fillna(0)
+        
+        # Médias gerais e desvios padrão
+        avg_entrada_mensal = monthly_totals['entrada'].mean() if not monthly_totals.empty else 0
+        avg_saida_mensal = monthly_totals['saida'].mean() if not monthly_totals.empty else 0
+        std_entrada_mensal = monthly_totals['entrada'].std() if len(monthly_totals) > 1 else avg_entrada_mensal * 0.2
+        std_saida_mensal = monthly_totals['saida'].std() if len(monthly_totals) > 1 else avg_saida_mensal * 0.2
+        
+        # Tendência dos últimos meses (se houver dados suficientes)
+        if len(monthly_totals) >= 3:
+            recent_totals = monthly_totals.tail(3)
+            trend_entrada = (recent_totals['entrada'].iloc[-1] - recent_totals['entrada'].iloc[0]) / len(recent_totals)
+            trend_saida = (recent_totals['saida'].iloc[-1] - recent_totals['saida'].iloc[0]) / len(recent_totals)
+        else:
+            trend_entrada = 0
+            trend_saida = 0
         
         # Cria DataFrame para os próximos meses
         future_months = []
@@ -153,46 +186,59 @@ def run_event_simulation(
             future_date = last_date + pd.DateOffset(months=month_offset)
             future_months.append(future_date)
         
-        # Calcula médias históricas por mês
-        historical_df['month'] = historical_df['data'].dt.month
-        monthly_averages = historical_df.groupby('month').agg({
-            'entrada': 'mean',
-            'saida': 'mean'
-        }).fillna(0)
-        
-        # Cria as projeções
+        # Cria as projeções com variação realista
         simulated_data = []
+        np.random.seed(42)  # Para resultados reprodutíveis
+        
         for i, future_date in enumerate(future_months):
             month = future_date.month
             
-            # Pega a média histórica para esse mês, ou média geral se não houver dados
-            if month in monthly_averages.index:
-                base_entrada = monthly_averages.loc[month, 'entrada']
-                base_saida = monthly_averages.loc[month, 'saida']
+            # Base mensal com padrão sazonal
+            if month in monthly_patterns.index:
+                seasonal_factor_e = monthly_patterns.loc[month, ('entrada', 'mean')] / avg_entrada_mensal if avg_entrada_mensal > 0 else 1.0
+                seasonal_factor_s = monthly_patterns.loc[month, ('saida', 'mean')] / avg_saida_mensal if avg_saida_mensal > 0 else 1.0
             else:
-                base_entrada = historical_df['entrada'].mean()
-                base_saida = historical_df['saida'].mean()
+                seasonal_factor_e = 1.0
+                seasonal_factor_s = 1.0
             
-            # Aplica modificadores se existirem
-            entrada_modificada = base_entrada
-            saida_modificada = base_saida
+            # Projeção base com sazonalidade e tendência
+            base_entrada = (avg_entrada_mensal * seasonal_factor_e) + (trend_entrada * (i + 1))
+            base_saida = (avg_saida_mensal * seasonal_factor_s) + (trend_saida * (i + 1))
             
-            # Aplica modificadores de entrada
+            # Adiciona variação realista (20% do desvio padrão, limitada)
+            variation_factor_e = np.random.normal(0, min(0.2, std_entrada_mensal / max(avg_entrada_mensal, 1)))
+            variation_factor_s = np.random.normal(0, min(0.2, std_saida_mensal / max(avg_saida_mensal, 1)))
+            
+            entrada_projecao = base_entrada * (1 + variation_factor_e)
+            saida_projecao = base_saida * (1 + variation_factor_s)
+            
+            # Aplica modificadores de eventos se existirem
+            entrada_modificada = entrada_projecao
+            saida_modificada = saida_projecao
+            
             for modifier in inflow_modifiers:
                 change_pct = modifier.get("value_change_percentage", 0) / 100.0
-                entrada_modificada *= (1 + change_pct)
+                delay = modifier.get("delay_days", 0)
+                # Aplica apenas se já passou o delay (meses)
+                if (i + 1) * 30 >= delay:
+                    entrada_modificada *= (1 + change_pct)
             
-            # Aplica modificadores de saída
             for modifier in outflow_modifiers:
                 change_pct = modifier.get("value_change_percentage", 0) / 100.0
-                saida_modificada *= (1 + change_pct)
+                delay = modifier.get("delay_days", 0)
+                if (i + 1) * 30 >= delay:
+                    saida_modificada *= (1 + change_pct)
+            
+            # Garante valores não negativos e realistas
+            entrada_final = max(0, entrada_modificada)
+            saida_final = max(0, saida_modificada)
             
             simulated_data.append({
                 'mes': future_date.strftime('%Y-%m'),
                 'data': future_date,
-                'entrada': max(0, entrada_modificada),
-                'saida': max(0, saida_modificada),
-                'fluxo_diario': entrada_modificada - saida_modificada
+                'entrada': entrada_final,
+                'saida': saida_final,
+                'fluxo_diario': entrada_final - saida_final
             })
         
         result_df = pd.DataFrame(simulated_data)
@@ -203,6 +249,8 @@ def run_event_simulation(
         
         logger.info(f"SIMULAÇÃO CONCLUÍDA - {simulation_months} meses simulados")
         logger.info(f"Colunas no resultado: {list(result_df.columns)}")
+        logger.info(f"Entrada média projetada: R$ {result_df['entrada'].mean():,.2f}")
+        logger.info(f"Saída média projetada: R$ {result_df['saida'].mean():,.2f}")
         
         return result_df
         

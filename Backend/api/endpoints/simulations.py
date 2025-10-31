@@ -120,6 +120,10 @@ class SimulationResponse(BaseModel):
     original_summary: Dict[str, Any]
     simulated_summary: Dict[str, Any]
     monthly_details: List[Dict[str, Any]]
+    # Compatibilidade com frontend que espera 'results_summary'
+    results_summary: Optional[Dict[str, Any]] = None
+    # Compatibilidade com frontend que espera 'scenarios.pessimista/mais_provavel/otimista'
+    scenarios: Optional[Dict[str, Any]] = None
 
 # --- Funções Auxiliares ---
 
@@ -772,11 +776,27 @@ async def simulate_scenario(request: SimulationRequest):
         simulated_summary = calculate_dataframe_summary(df_simulated)
         monthly_details = convert_dataframe_to_monthly_details(df_simulated)
 
+        # Construir objeto 'scenarios' (p25, p50, p75) com base em fluxo_de_caixa
+        try:
+            serie_fluxo = pd.to_numeric(df_simulated.get('fluxo_de_caixa', pd.Series(dtype=float)), errors='coerce').fillna(0)
+            p25 = float(np.percentile(serie_fluxo, 25)) if len(serie_fluxo) > 0 else 0.0
+            p50 = float(np.percentile(serie_fluxo, 50)) if len(serie_fluxo) > 0 else 0.0
+            p75 = float(np.percentile(serie_fluxo, 75)) if len(serie_fluxo) > 0 else 0.0
+            scenarios_obj = {
+                "pessimista": {"nome": "Cenário Pessimista", "percentil": 25, "valor": p25},
+                "mais_provavel": {"nome": "Cenário Mais Provável", "percentil": 50, "valor": p50},
+                "otimista": {"nome": "Cenário Otimista", "percentil": 75, "valor": p75},
+            }
+        except Exception:
+            scenarios_obj = None
+
         response = SimulationResponse(
             scenario_type=scenario_name,
             original_summary=original_summary,
             simulated_summary=simulated_summary,
-            monthly_details=monthly_details
+            monthly_details=monthly_details,
+            results_summary=simulated_summary,
+            scenarios=scenarios_obj
         )
         
         logger.info(f"✅ Simulação {request.simulation_type} concluída com sucesso")
@@ -913,34 +933,58 @@ async def execute_monte_carlo_simulation(request: MonteCarloRequest):
         analise = ScenarioSimulatorMock.analisar_probabilidades(df_resultados)
         
         # Retorna resultado com 3 cenários (percentis 25, 50, 75)
+        p25 = analise.get("percentil_25", 0)
+        p50 = analise.get("percentil_50", 0)
+        p75 = analise.get("percentil_75", 0)
+        prob_neg = analise.get("prob_saldo_negativo", 0)
+        prob_neg_real = analise.get("prob_saldo_negativo_real", prob_neg)
+        
+        # Log para debug
+        logger.info(f"Resultados da análise: P25={p25:.2f}, P50={p50:.2f}, P75={p75:.2f}, Prob_Neg={prob_neg:.4f} ({prob_neg*100:.1f}%), Prob_Real={prob_neg_real:.4f}")
+        
+        if p75 < 0:
+            risk_level = "critico"
+            risk_message = "Mesmo o cenário otimista (P75) é negativo"
+        elif p50 < 0 or prob_neg >= 0.40:
+            risk_level = "alto"
+            risk_message = "Mediana negativa ou probabilidade >= 40%"
+        elif p25 < 0 or prob_neg >= 0.15:
+            risk_level = "medio"
+            risk_message = "P25 negativo ou probabilidade >= 15%"
+        else:
+            risk_level = "baixo"
+            risk_message = "Probabilidade baixa de saldo negativo"
+
         return {
             "results_summary": {
-                "prob_saldo_negativo_final": analise.get("prob_saldo_negativo", 0),
-                "prob_saldo_negativo_qualquer_momento": analise.get("prob_saldo_negativo", 0),
-                "valor_minimo_esperado": analise.get("percentil_25", 0),  # Cenário pessimista (25%)
-                "valor_mediano_esperado": analise.get("percentil_50", 0),  # Cenário mais provável (50%)
-                "valor_maximo_esperado": analise.get("percentil_75", 0),  # Cenário otimista (75%)
+                "prob_saldo_negativo_final": prob_neg,
+                "prob_saldo_negativo_qualquer_momento": prob_neg,
+                "valor_minimo_esperado": p25,  # Cenário pessimista (25%)
+                "valor_mediano_esperado": p50,  # Cenário mais provável (50%)
+                "valor_maximo_esperado": p75,  # Cenário otimista (75%)
                 "saldo_medio": analise.get("saldo_medio", 0),
                 "saldo_std": analise.get("saldo_std", 0),
-                "num_simulacoes": analise.get("num_simulacoes", 0)
+                "num_simulacoes": analise.get("num_simulacoes", 0),
+                "risk_level": risk_level,
+                "risk_message": risk_message
             },
             "scenarios": {
                 "pessimista": {
                     "nome": "Cenário Pessimista",
                     "percentil": 25,
-                    "valor": analise.get("percentil_25", 0),
+                    "valor": p25,
                     "descricao": "Apenas 25% dos casos serão piores que este cenário"
                 },
                 "mais_provavel": {
                     "nome": "Cenário Mais Provável",
                     "percentil": 50,
-                    "valor": analise.get("percentil_50", 0),
+                    "valor": p50,
                     "descricao": "Valor mediano - 50% dos casos estarão acima ou abaixo"
                 },
                 "otimista": {
                     "nome": "Cenário Otimista",
                     "percentil": 75,
-                    "valor": analise.get("percentil_75", 0),
+                    "valor": p75,
                     "descricao": "Apenas 25% dos casos serão melhores que este cenário"
                 }
             }

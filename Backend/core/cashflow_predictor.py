@@ -316,42 +316,64 @@ class CashflowPredictor:
             
             # Aplicar variação determinística baseada em padrões do histórico
             if len(historico_fluxos) > 0:
-                # Calcular variação baseada no coeficiente de variação histórico
-                hist_cv = hist_std / abs(hist_mean) if hist_mean != 0 else 0.2
+                # Calcular variação baseada no coeficiente de variação histórico (CV)
+                hist_cv = hist_std / abs(hist_mean) if hist_mean != 0 else 0.25
                 
                 # Gerar variação determinística usando hash da data (sempre igual para mesma data)
-                date_hash = hash(str(current_date)) % 1000
-                variation_seed = (date_hash / 1000.0) - 0.5  # -0.5 a +0.5
+                date_hash = hash(str(current_date)) % 10000
+                variation_seed = (date_hash / 10000.0) * 2 - 1  # -1 a +1
                 
-                # Aplicar variação proporcional à volatilidade histórica
-                variation_factor = 1 + (variation_seed * hist_cv * 0.8)  # 80% da CV histórica
-                predicted_flow = predicted_flow * variation_factor
+                # Aplicar variação proporcional à volatilidade histórica (mais forte)
+                base_variation = 1 + (variation_seed * hist_cv * 1.4)
+                predicted_flow = predicted_flow * base_variation
+                
+                # Choques determinísticos em alguns dias (quando |seed| alto)
+                abs_seed = abs(variation_seed)
+                if abs_seed > 0.6:
+                    shock_magnitude = min(0.6, hist_cv * 2.0)  # até +/−60%
+                    shock = 1 + (np.sign(variation_seed) * shock_magnitude)
+                    predicted_flow *= shock
                 
                 # Fatores sazonais determinísticos (baseados na data, não aleatórios)
                 weekday_factor = {
-                    0: 1.15,  # Segunda-feira: +15%
-                    1: 1.08,  # Terça-feira: +8%
-                    2: 1.0,   # Quarta-feira: normal
-                    3: 0.95,  # Quinta-feira: -5%
-                    4: 0.85,  # Sexta-feira: -15%
-                    5: 0.6,   # Sábado: -40%
-                    6: 0.5    # Domingo: -50%
+                    0: 1.20,  # Segunda-feira: +20%
+                    1: 1.10,  # Terça-feira: +10%
+                    2: 1.00,  # Quarta-feira: normal
+                    3: 0.92,  # Quinta-feira: -8%
+                    4: 0.80,  # Sexta-feira: -20%
+                    5: 0.55,  # Sábado: -45%
+                    6: 0.48   # Domingo: -52%
                 }
                 
                 # Fatores mensais determinísticos
                 day_of_month = current_date.day
                 if day_of_month <= 3:
-                    month_factor = 1.25  # Primeiros 3 dias: +25%
+                    month_factor = 1.30  # Primeiros 3 dias: +30%
                 elif day_of_month <= 7:
-                    month_factor = 1.1   # Primeira semana: +10%
+                    month_factor = 1.12  # Primeira semana: +12%
                 elif day_of_month >= 28:
-                    month_factor = 1.2   # Últimos dias: +20%
+                    month_factor = 1.25  # Últimos dias: +25%
                 else:
                     month_factor = 1.0   # Meio do mês: normal
                 
                 # Aplicar fatores sazonais
                 weekday_multiplier = weekday_factor.get(current_date.dayofweek, 1.0)
                 predicted_flow = predicted_flow * weekday_multiplier * month_factor
+
+                # Impulsionar eventos de pagamento e fim de mês de forma determinística
+                # Em dias de pagamento, entradas tendem a subir e saídas também podem concentrar
+                if int(current_date.day in self.dias_de_evento['dia_pagamento']):
+                    boost = 1.6 if predicted_flow >= 0 else 1.25
+                    predicted_flow *= boost
+                if int(current_date.day in self.dias_de_evento['fim_de_mes']):
+                    eom_boost = 1.35 if predicted_flow < 0 else 1.15
+                    predicted_flow *= eom_boost
+
+                # Heteroscedasticidade por dia da semana: mais variação em seg-sex
+                dow_volatility = {
+                    0: 1.15, 1: 1.10, 2: 1.05, 3: 1.10, 4: 1.15, 5: 0.90, 6: 0.85
+                }.get(current_date.dayofweek, 1.0)
+                predicted_flow *= dow_volatility
                 
                 # Limites realistas baseados no histórico
                 hist_min = min(historico_fluxos)
@@ -359,15 +381,24 @@ class CashflowPredictor:
                 hist_median = np.median(historico_fluxos)
                 
                 # Limites mais flexíveis para permitir variação
-                predicted_flow = np.clip(predicted_flow, 
-                                      hist_min * 0.2,  # Mínimo: 20% do menor valor histórico
-                                      hist_max * 2.5)  # Máximo: 250% do maior valor histórico
+                predicted_flow = np.clip(
+                    predicted_flow,
+                    hist_min * 0.1,   # Mínimo: 10% do menor valor histórico
+                    hist_max * 3.0    # Máximo: 300% do maior valor histórico
+                )
                 
-                # Suavização mais leve para manter variação
+                # Suavização leve para evitar série excessivamente contínua, preservando variação
                 if len(historico_fluxos) >= 3:
                     recent_trend = np.mean(historico_fluxos[-3:])
-                    smoothing_factor = 0.15  # Aumentado para 15%
+                    # Em dias com choque, reduzir suavização ainda mais
+                    smoothing_factor = 0.08 if abs_seed > 0.6 else 0.10
                     predicted_flow = predicted_flow * (1 - smoothing_factor) + recent_trend * smoothing_factor
+
+            # Evitar valores excessivamente contínuos: reforça discretização em centavos e pequenas quebras
+            # Quantiza em centavos e aplica um micro ajuste determinístico por data
+            cents_quantized = np.round(predicted_flow, 2)
+            micro_jitter = ((hash(str(current_date.date())) % 11) - 5) * 0.05  # faixa ~[-0.25, 0.25]
+            predicted_flow = float(np.round(cents_quantized + micro_jitter, 2))
 
             # Armazena previsão e atualiza histórico para o próximo passo da recorrência
             previsoes.append({'data': current_date, 'fluxo_previsto': predicted_flow})

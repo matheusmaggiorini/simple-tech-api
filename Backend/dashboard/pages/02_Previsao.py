@@ -57,7 +57,7 @@ if st.button("Gerar Previsão", type="primary"):
         try:
             # Fazer requisição para API
             payload = {
-                "days_to_predict": days_to_predict
+                "future_days": days_to_predict
             }
             
             response = requests.post(
@@ -68,13 +68,25 @@ if st.button("Gerar Previsão", type="primary"):
             
             if response.status_code == 200:
                 result = response.json()
-                predictions = result.get("predictions", [])
-                alerts = result.get("alerts", [])
+                # Backend retorna lista de registros [{data, fluxo_previsto, saldo_previsto}]
+                predictions = result if isinstance(result, list) else []
+                alerts = []
                 
                 if predictions:
                     # Converter para DataFrame
                     df_predictions = pd.DataFrame(predictions)
+                    # Campos esperados do backend: data, fluxo_previsto, saldo_previsto
+                    if 'data' not in df_predictions.columns:
+                        st.error("Resposta da API sem coluna 'data'.")
+                        st.stop()
                     df_predictions['data'] = pd.to_datetime(df_predictions['data'])
+                    if 'saldo_previsto' not in df_predictions.columns and 'fluxo_previsto' in df_predictions.columns:
+                        # Se saldo não veio, constrói a partir do fluxo acumulado
+                        df_predictions['saldo_previsto'] = df_predictions['fluxo_previsto'].cumsum()
+                    # Estimar entradas e saídas a partir do fluxo previsto
+                    if 'fluxo_previsto' in df_predictions.columns:
+                        df_predictions['entrada_estimada'] = df_predictions['fluxo_previsto'].clip(lower=0)
+                        df_predictions['saida_estimada'] = (-df_predictions['fluxo_previsto']).clip(lower=0)
                     
                     # Gráfico de previsão
                     st.subheader("📊 Projeção de Saldo")
@@ -111,8 +123,14 @@ if st.button("Gerar Previsão", type="primary"):
                     df_display = df_predictions.copy()
                     df_display['data'] = df_display['data'].dt.strftime('%Y-%m-%d')
                     df_display['saldo_previsto'] = df_display['saldo_previsto'].apply(lambda x: f"R$ {x:,.2f}")
-                    df_display['entrada_estimada'] = df_display['entrada_estimada'].apply(lambda x: f"R$ {x:,.2f}")
-                    df_display['saida_estimada'] = df_display['saida_estimada'].apply(lambda x: f"R$ {x:,.2f}")
+                    if 'entrada_estimada' in df_display.columns:
+                        df_display['entrada_estimada'] = df_display['entrada_estimada'].apply(lambda x: f"R$ {x:,.2f}")
+                    else:
+                        df_display['entrada_estimada'] = "R$ 0,00"
+                    if 'saida_estimada' in df_display.columns:
+                        df_display['saida_estimada'] = df_display['saida_estimada'].apply(lambda x: f"R$ {x:,.2f}")
+                    else:
+                        df_display['saida_estimada'] = "R$ 0,00"
                     
                     # Renomear colunas
                     df_display = df_display.rename(columns={

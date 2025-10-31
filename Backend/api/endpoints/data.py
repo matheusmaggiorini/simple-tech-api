@@ -490,9 +490,16 @@ async def upload_excel_bundle(file: UploadFile | None = File(None), files: list[
                     'saida', 'saída', 'fevereiro', 'janeiro', 'março', 'abril', 'maio', 'junho', 
                     'julho', 'agosto', 'setembro', 'outubro', 'novembro', 'dezembro', 'cópia'
                 ])
+
+                # Proteção: se o nome indica ENTRADA, não tratar como saída
+                if any(k in filename_lower for k in ['entrada', 'entradas']):
+                    is_outflow_file = False
                 
                 # Usa detecção automática ou o parâmetro has_outflow
                 treat_as_outflow = is_outflow_file or bool(has_outflow)
+                # Se o nome indica ENTRADA, força False (a menos que explicitamente marcado pelo usuário via has_outflow)
+                if any(k in filename_lower for k in ['entrada', 'entradas']) and not bool(has_outflow):
+                    treat_as_outflow = False
                 print(f"[DEBUG] Arquivo {up.filename} - tratado como saída: {treat_as_outflow}")
                 
                 # Verifica se é um arquivo Excel com múltiplas abas (arquivo de saída mensal)
@@ -812,6 +819,32 @@ async def get_monthly_summary(limit: int | None = None):
     if limit and limit > 0:
         grouped = grouped.head(limit)
     return JSONResponse(content=grouped.to_dict(orient='records'))
+
+
+@router.get("/monthly_outflows_matrix")
+async def get_monthly_outflows_matrix(limit: int | None = None):
+    """Retorna uma matriz com ["YYYY-MM", total_saidas] por mês.
+    Ex.: [["2024-01", 1234.56], ["2024-02", 987.65], ...]
+    """
+    if state.global_processed_df is None or state.global_processed_df.empty:
+        raise HTTPException(status_code=404, detail="Nenhum dado processado.")
+
+    df = state.global_processed_df.copy()
+    if 'data' not in df.columns:
+        raise HTTPException(status_code=400, detail="Coluna 'data' ausente após processamento.")
+
+    df['data'] = pd.to_datetime(df['data'])
+    df['ano_mes'] = df['data'].dt.to_period('M')
+    df['saida_num'] = pd.to_numeric(df.get('saida', 0), errors='coerce').fillna(0)
+
+    grouped = df.groupby('ano_mes').agg(total_saidas=('saida_num', 'sum')).reset_index()
+    grouped['ano_mes'] = grouped['ano_mes'].astype(str)
+
+    if limit and limit > 0:
+        grouped = grouped.head(limit)
+
+    matrix = [[row['ano_mes'], float(row['total_saidas'])] for _, row in grouped.iterrows()]
+    return JSONResponse(content=matrix)
 
 @router.get("/yearly_monthly_data")
 async def get_yearly_monthly_data():
