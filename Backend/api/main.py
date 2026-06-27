@@ -6,12 +6,15 @@ import sys
 from dotenv import load_dotenv
 from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.requests import Request
 
 # Adiciona o diretório raiz ao path para encontrar os outros módulos
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from api.core.database import init_db
 from api.core.deps import get_current_user
+from api.core.security import decode_token
+from api.endpoints import state as session_state
 from api.endpoints.auth import router as auth_router
 from api.endpoints.data import router as data_router
 from api.endpoints.predictions import router as predictions_router
@@ -56,6 +59,20 @@ app.include_router(
     dependencies=_protected,
 )
 app.include_router(reports_router, prefix="/api", tags=["Reports"], dependencies=_protected)
+
+
+@app.middleware("http")
+async def bind_user_context(request: Request, call_next):
+    """Set per-request user id for session state (ContextVar) from JWT."""
+    auth = request.headers.get("Authorization")
+    if auth and auth.startswith("Bearer "):
+        payload = decode_token(auth[7:].strip())
+        if payload and payload.get("sub") is not None:
+            try:
+                session_state.set_current_user(int(payload["sub"]))
+            except (TypeError, ValueError):
+                pass
+    return await call_next(request)
 
 
 @app.on_event("startup")

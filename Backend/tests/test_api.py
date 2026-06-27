@@ -1,18 +1,14 @@
 """Tests for Simple Tech API."""
 
 import os
-import sys
 import tempfile
 
 import pytest
 from fastapi.testclient import TestClient
 
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
-
 from api.endpoints import state
 from api.main import app
 
-os.makedirs(state.UPLOAD_DIR, exist_ok=True)
 client = TestClient(app)
 
 
@@ -81,7 +77,7 @@ def test_register_and_login():
 
 def test_protected_route_without_token():
     response = client.get("/api/data/status")
-    assert response.status_code == 403
+    assert response.status_code == 401
 
 
 def test_data_status_without_upload(auth_headers):
