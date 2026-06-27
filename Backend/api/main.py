@@ -29,10 +29,13 @@ app = FastAPI(
     version="2.0.0",
 )
 
-_cors_origins = os.getenv(
-    "CORS_ORIGINS",
-    "http://localhost:8080,http://localhost:5173,http://127.0.0.1:8080",
-).split(",")
+_default_cors = (
+    "http://localhost:8080,"
+    "http://localhost:5173,"
+    "http://127.0.0.1:8080,"
+    "https://matheusmaggiorini.github.io"
+)
+_cors_origins = os.getenv("CORS_ORIGINS", _default_cors).split(",")
 
 app.add_middleware(
     CORSMiddleware,
