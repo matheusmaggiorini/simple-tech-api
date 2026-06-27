@@ -1,5 +1,6 @@
 from fastapi import APIRouter, UploadFile, File, HTTPException, Form
 from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 import pandas as pd
 import os
@@ -18,6 +19,18 @@ if not os.path.exists(state.UPLOAD_DIR):
     os.makedirs(state.UPLOAD_DIR)
 
 router = APIRouter()
+
+
+@router.get("/status")
+async def data_status():
+    """Check whether the current user has uploaded financial data."""
+    df = state.global_processed_df
+    has_data = df is not None and not df.empty
+    return {
+        "has_data": has_data,
+        "rows": int(len(df)) if has_data else 0,
+    }
+
 
 class FileUploadResponse(BaseModel):
     message: str

@@ -1,155 +1,95 @@
-# Simple - Análise Preditiva de Fluxo de Caixa
+# Simple Tech
 
-Sistema inteligente para análise de risco financeiro, previsão de fluxo de caixa e simulação de cenários.
+Cloud-based financial management platform for small businesses. Upload cash flow data, get ML-powered forecasts, run Monte Carlo scenario simulations, and generate AI reports.
 
-## 🚀 Início Rápido
+Built by the Simple Tech team.
 
-### 1. Instalação das Dependências
+## Stack
 
-```bash
-# Instalar dependências
+| Layer | Technology |
+|-------|------------|
+| Frontend | React 18, TypeScript, Vite, shadcn/ui, Tailwind, Recharts |
+| Backend | FastAPI, scikit-learn, XGBoost, Gemini API |
+| Auth | JWT + bcrypt |
+| Storage | SQLite (users) + Parquet per user (financial data) |
+
+## Repositories
+
+- **Frontend:** `simple-tech` (this repo)
+- **Backend:** `Simple.Tech` → `Backend/` folder
+
+## Quick start (local)
+
+### 1. Backend
+
+```powershell
+cd Backend
+python -m venv .venv
+.venv\Scripts\activate
 pip install -r requirements.txt
+copy .env.example .env
+python -m uvicorn api.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
-### 2. Executar a Aplicação
+API docs: http://localhost:8000/docs
 
-#### Opção A: Script Automático (Recomendado)
-```bash
-python run_app.py
+### 2. Frontend
+
+```powershell
+cd simple-tech
+npm install
+copy .env.example .env
+npm run dev
 ```
 
-#### Opção B: Manual
-```bash
-# Terminal 1 - API
-uvicorn api.main:app --reload --host 0.0.0.0 --port 8000
+App: http://localhost:8080
 
-# Terminal 2 - Dashboard
-streamlit run dashboard/app.py --server.port 8501
-```
+### 3. First use
 
-### 3. Acessar a Aplicação
+1. Open http://localhost:8080
+2. Create an account (`/auth`)
+3. Upload Excel/CSV files (inflow and/or outflow)
+4. Explore dashboard, forecasts, and simulations
 
-- **Dashboard**: http://localhost:8501
-- **API**: http://localhost:8000
-- **Documentação da API**: http://localhost:8000/docs
+## Environment variables
 
-## 📊 Como Usar
+### Backend (`Backend/.env`)
 
-### 1. Upload de Dados
-- Acesse a página "1. Upload de Dados"
-- Faça upload do seu arquivo CSV financeiro
-- O arquivo deve conter pelo menos as colunas: `data`, `descricao`
-- Colunas recomendadas: `entrada`, `saida`
+| Variable | Description |
+|----------|-------------|
+| `JWT_SECRET_KEY` | Secret for signing tokens (change in production) |
+| `GEMINI_API_KEY` | Optional — enables AI-generated reports |
+| `CORS_ORIGINS` | Comma-separated frontend URLs |
 
-### 2. Formato do CSV
+### Frontend (`.env`)
+
+| Variable | Description |
+|----------|-------------|
+| `VITE_API_BASE_URL` | Backend URL (default: `http://localhost:8000`) |
+
+## Features
+
+- **Upload** — Excel/CSV with Brazilian currency formats
+- **Dashboard** — KPIs, balance evolution, monthly summary
+- **Forecast** — ML cash flow prediction (XGBoost)
+- **Simulation** — Monte Carlo scenarios, business events, loan impact
+- **Reports** — Markdown reports (Gemini when configured)
+
+## CSV format
 
 ```csv
 data,descricao,entrada,saida
-2024-01-01,Venda Produto A,1000.00,0.00
-2024-01-02,Pagamento Fornecedor,0.00,500.00
-2024-01-03,Venda Produto B,1500.00,0.00
+2024-01-01,Product sale,1000.00,0.00
+2024-01-02,Supplier payment,0.00,500.00
 ```
 
-### 3. Análises Disponíveis
+## Deploy (free tier)
 
-#### Previsão de Fluxo de Caixa
-- Página "2. Previsão"
-- Gera previsões futuras do saldo
-- Identifica alertas de risco
+- **Backend:** Render — set start command: `uvicorn api.main:app --host 0.0.0.0 --port $PORT`
+- **Frontend:** Vercel — set `VITE_API_BASE_URL` to your Render URL
 
-#### Simulação de Cenários
-- Página "3. Simulação"
-- Simulação de Monte Carlo
-- Análise de probabilidades de risco
+Cold starts on free tier are expected; mention this in demos.
 
-#### Dashboard Geral
-- Página "4. Dashboard Geral"
-- Visão consolidada de todas as análises
+## License
 
-## 🔧 Estrutura do Projeto
-
-```
-RiskAI_PTI/
-├── api/                    # API FastAPI
-│   ├── endpoints/         # Endpoints da API
-│   │   ├── data.py       # Upload e processamento de dados
-│   │   ├── predictions.py # Previsões de fluxo de caixa
-│   │   ├── simulations.py # Simulações Monte Carlo
-│   │   └── state.py      # Estado compartilhado
-│   └── main.py           # Aplicação principal da API
-├── dashboard/              # Interface Streamlit
-│   ├── pages/            # Páginas do dashboard
-│   │   ├── 01_Upload.py
-│   │   ├── 02_Previsao.py
-│   │   ├── 03_Simulacao.py
-│   │   └── 04_Dashboard_Geral.py
-│   └── app.py            # Aplicação principal do dashboard
-├── core/                   # Módulos de análise
-│   ├── customer_analysis.py
-│   └── scenario_simulator.py
-├── requirements.txt        # Dependências
-├── run_app.py             # Script de inicialização
-└── README.md              # Este arquivo
-```
-
-## 🛠️ Soluções de Problemas Comuns
-
-### Erro 404 na API
-- Verifique se a API está rodando: http://localhost:8000/health
-- Certifique-se de que está usando os endpoints corretos com `/api/` no prefixo
-
-### Erro de Conexão
-- Verifique se ambos os serviços estão rodando
-- Confirme se as portas 8000 e 8501 estão livres
-
-### Erro no Upload de Arquivos
-- Verifique se o arquivo é CSV válido
-- Confirme se possui as colunas obrigatórias: `data`, `descricao`
-- Verifique o formato das datas (YYYY-MM-DD)
-
-### Problemas de Dependências
-```bash
-# Reinstalar dependências
-pip install --upgrade -r requirements.txt
-
-# Limpar cache do pip
-pip cache purge
-```
-
-## 📈 Funcionalidades
-
-### ✅ Implementado
-- Upload e processamento de dados CSV
-- Previsão de fluxo de caixa com machine learning
-- Análise de riscos e alertas
-- Simulação de Monte Carlo
-- Dashboard interativo
-- API REST completa
-
-### 🔄 Em Desenvolvimento
-- Análise de inadimplência de clientes
-- Relatórios em PDF
-- Integração com bancos de dados
-- Autenticação de usuários
-
-## 🤝 Contribuição
-
-1. Fork o projeto
-2. Crie uma branch para sua feature (`git checkout -b feature/AmazingFeature`)
-3. Commit suas mudanças (`git commit -m 'Add some AmazingFeature'`)
-4. Push para a branch (`git push origin feature/AmazingFeature`)
-5. Abra um Pull Request
-
-## 📄 Licença
-
-Este projeto está licenciado sob a Licença MIT - veja o arquivo [LICENSE](LICENSE) para detalhes.
-
-## 📞 Suporte
-
-Para suporte e dúvidas:
-- Abra uma issue no GitHub
-- Entre em contato com a equipe de desenvolvimento
-
----
-
-**RiskAI** - Desenvolvido com ❤️ para análise financeira inteligente
+Private team project. Contact the Simple Tech team for usage rights.

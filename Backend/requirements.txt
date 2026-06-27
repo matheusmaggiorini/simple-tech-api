@@ -1,4 +1,4 @@
-# Requisitos do Projeto RiskAI - Backend
+# Simple Tech Backend
 
 # Core data/ML
 pandas>=2.1.0
@@ -10,15 +10,20 @@ xgboost>=1.7.0
 fastapi>=0.104.0
 uvicorn>=0.24.0
 pydantic>=2.5.0
+pydantic[email]>=2.5.0
 python-multipart>=0.0.6
 requests>=2.31.0
-flask>=3.0.0
 python-dotenv>=1.0.1
 
-# AI/ML Services
+# Auth
+python-jose[cryptography]>=3.3.0
+passlib[bcrypt]>=1.7.4
+bcrypt>=4.0.0
+
+# AI
 google-generativeai>=0.7.2
 
-# Dashboard
+# Legacy Streamlit dashboard (optional)
 streamlit>=1.28.0
 plotly>=5.17.0
 
@@ -27,5 +32,6 @@ openpyxl>=3.1.0
 xlrd>=2.0.1
 pyarrow>=12.0.0
 
-# Testing (used in tests)
+# Testing
 pytest>=7.0.0
+httpx>=0.27.0

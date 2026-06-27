@@ -1,0 +1,11 @@
+.env
+.env.local
+.env.*.local
+data/simple_tech.db
+data/user_sessions/
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+venv/
+*.egg-info/

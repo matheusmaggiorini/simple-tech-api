@@ -1,67 +1,89 @@
 # Backend/api/main.py
 
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
 import os
 import sys
-from dotenv import load_dotenv
 
-#Comando para rodar a api:
-#python -m uvicorn Backend.api.main:app --reload --port 8000
+from dotenv import load_dotenv
+from fastapi import Depends, FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
 # Adiciona o diretório raiz ao path para encontrar os outros módulos
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-# Importar os 'routers' de cada arquivo de endpoint
+from api.core.database import init_db
+from api.core.deps import get_current_user
+from api.endpoints.auth import router as auth_router
 from api.endpoints.data import router as data_router
 from api.endpoints.predictions import router as predictions_router
-from api.endpoints.simulations import router as simulations_router
 from api.endpoints.reports import router as reports_router
+from api.endpoints.simulations import router as simulations_router
 
-
-# Carregar variáveis do .env
 load_dotenv()
 
-# Criar a aplicação FastAPI
 app = FastAPI(
-    title="Simple.Tech API",
-    description="API para análise de risco, previsão de fluxo de caixa e simulação de cenários.",
-    version="1.0.0"
+    title="Simple Tech API",
+    description="Cloud financial management: cash flow analysis, ML forecasting, and scenario simulation.",
+    version="2.0.0",
 )
 
-# Configurar o CORS para permitir que o Streamlit (rodando em outra porta) se conecte
+_cors_origins = os.getenv(
+    "CORS_ORIGINS",
+    "http://localhost:8080,http://localhost:5173,http://127.0.0.1:8080",
+).split(",")
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Permite todas as origens, ideal para desenvolvimento local
+    allow_origins=[o.strip() for o in _cors_origins if o.strip()],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Incluir os routers dos endpoints na aplicação principal
-app.include_router(data_router, prefix="/api/data", tags=["Data Management"])
-app.include_router(predictions_router, prefix="/api/predictions", tags=["Predictions & Alerts"])
-app.include_router(simulations_router, prefix="/api/simulations", tags=["Simulations"])
-app.include_router(reports_router, prefix="/api", tags=["Reports"])
+app.include_router(auth_router)
+
+_protected = [Depends(get_current_user)]
+app.include_router(data_router, prefix="/api/data", tags=["Data Management"], dependencies=_protected)
+app.include_router(
+    predictions_router,
+    prefix="/api/predictions",
+    tags=["Predictions"],
+    dependencies=_protected,
+)
+app.include_router(
+    simulations_router,
+    prefix="/api/simulations",
+    tags=["Simulations"],
+    dependencies=_protected,
+)
+app.include_router(reports_router, prefix="/api", tags=["Reports"], dependencies=_protected)
 
 
-# --- Endpoints Principais ---
+@app.on_event("startup")
+async def startup() -> None:
+    init_db()
+
 
 @app.get("/", tags=["Root"])
 async def read_root():
-    """Endpoint raiz que mostra que a API está funcionando."""
     return {
-        "message": "Simple.Tech API está funcionando!",
-        "docs_url": "/docs"
+        "message": "Simple Tech API is running",
+        "docs_url": "/docs",
+        "version": "2.0.0",
     }
+
 
 @app.get("/health", tags=["Health Check"])
 async def health_check():
-    """Endpoint de 'saúde' para verificar se a API está online."""
     return {"status": "healthy"}
 
-# --- Bloco para execução direta do arquivo (para testes) ---
+
+@app.get("/api/auth/me", tags=["Authentication"])
+async def get_me(user: dict = Depends(get_current_user)):
+    return {"id": user["id"], "email": user["email"], "name": user["name"]}
+
+
 if __name__ == "__main__":
     import uvicorn
-    print("Iniciando servidor Uvicorn para Simple.Tech API em http://localhost:8000")
+
+    print("Starting Simple Tech API at http://localhost:8000")
     uvicorn.run(app, host="0.0.0.0", port=8000)
