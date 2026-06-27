@@ -915,17 +915,26 @@ async def get_yearly_monthly_data(user: dict = Depends(get_current_user)):
     # Garantir colunas numéricas
     df['entrada_num'] = pd.to_numeric(df.get('entrada', 0), errors='coerce').fillna(0)
     df['saida_num'] = pd.to_numeric(df.get('saida', 0), errors='coerce').fillna(0)
+    df['tem_entrada'] = df['entrada_num'] > 0
     
     # Agrupar por ano e mês
     grouped = df.groupby(['ano', 'mes', 'mes_ano']).agg({
         'entrada_num': 'sum',
         'saida_num': 'sum',
-        'saldo': 'last'  # Último saldo do mês
+        'saldo': 'last',
+        'tem_entrada': 'sum',
+        'data': 'count',
     }).reset_index()
+    
+    grouped.rename(columns={'data': 'qtd_transacoes', 'tem_entrada': 'qtd_entradas_pos'}, inplace=True)
     
     # Calcular fluxo líquido e renomear colunas
     grouped['fluxo_liquido'] = grouped['entrada_num'] - grouped['saida_num']
     grouped['saldo_final_mes'] = grouped['saldo']
+    grouped['ticket_medio'] = grouped.apply(
+        lambda r: float(r['entrada_num']) / int(r['qtd_entradas_pos']) if int(r['qtd_entradas_pos']) > 0 else 0.0,
+        axis=1,
+    )
     
     # Converter para formato esperado pelo frontend
     result = []
@@ -937,7 +946,9 @@ async def get_yearly_monthly_data(user: dict = Depends(get_current_user)):
             'total_entradas': float(row['entrada_num']),
             'total_saidas': float(row['saida_num']),
             'fluxo_liquido': float(row['fluxo_liquido']),
-            'saldo_final_mes': float(row['saldo_final_mes']) if not pd.isna(row['saldo_final_mes']) else 0.0
+            'saldo_final_mes': float(row['saldo_final_mes']) if not pd.isna(row['saldo_final_mes']) else 0.0,
+            'qtd_transacoes': int(row['qtd_transacoes']),
+            'ticket_medio': float(row['ticket_medio']),
         })
     
     # Ordenar por ano e mês
