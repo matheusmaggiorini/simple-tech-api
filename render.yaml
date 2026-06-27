@@ -9,7 +9,7 @@ services:
       - key: JWT_SECRET_KEY
         generateValue: true
       - key: CORS_ORIGINS
-        sync: false
+        value: https://matheusmaggiorini.github.io
       - key: GEMINI_API_KEY
         sync: false
         optional: true
