@@ -21,6 +21,15 @@ if not os.path.exists(state.UPLOAD_DIR):
 router = APIRouter()
 
 
+def _user_df(user: dict) -> pd.DataFrame | None:
+    """Return processed dataframe for the authenticated user."""
+    return state.get_user_session(user["id"]).processed_df
+
+
+def _user_stats(user: dict) -> dict | None:
+    return state.get_user_session(user["id"]).historical_stats
+
+
 @router.get("/status")
 async def data_status(user: dict = Depends(get_current_user)):
     """Check whether the current user has uploaded financial data."""
@@ -510,6 +519,12 @@ async def upload_excel_bundle(
                     'julho', 'agosto', 'setembro', 'outubro', 'novembro', 'dezembro', 'cópia'
                 ])
 
+                # CSV/planilha combinada (entrada + saída) — não tratar como só saída
+                if any(k in filename_lower for k in [
+                    'fluxo_caixa', 'fluxo-caixa', 'fluxo caixa', 'fluxo', 'caixa',
+                ]):
+                    is_outflow_file = False
+
                 # Proteção: se o nome indica ENTRADA, não tratar como saída
                 if any(k in filename_lower for k in ['entrada', 'entradas']):
                     is_outflow_file = False
@@ -664,12 +679,19 @@ async def upload_excel_bundle(
 
 
 @router.get("/view_processed")
-async def view_processed_data(limit: int = 50, start_date: str = None, end_date: str = None, order: str = "asc"):
+async def view_processed_data(
+    limit: int = 50,
+    start_date: str = None,
+    end_date: str = None,
+    order: str = "asc",
+    user: dict = Depends(get_current_user),
+):
     """Retorna uma prévia dos dados de fluxo de caixa carregados."""
-    if state.global_processed_df is None or state.global_processed_df.empty:
+    df_src = _user_df(user)
+    if df_src is None or df_src.empty:
         raise HTTPException(status_code=404, detail="Nenhum dado de fluxo de caixa processado.")
 
-    df_src = state.global_processed_df.copy()
+    df_src = df_src.copy()
     
     # Filtrar por data se especificado
     if start_date or end_date:
@@ -698,26 +720,28 @@ async def view_processed_data(limit: int = 50, start_date: str = None, end_date:
 
 
 @router.get("/statistics")
-async def get_statistics():
+async def get_statistics(user: dict = Depends(get_current_user)):
     """Retorna as estatísticas históricas calculadas."""
-    if state.global_historical_stats is None:
+    stats = _user_stats(user)
+    if stats is None:
         raise HTTPException(
             status_code=404, 
             detail="Nenhuma estatística calculada. Faça o upload dos dados primeiro."
         )
     
-    return JSONResponse(content=state.global_historical_stats)
+    return JSONResponse(content=stats)
 
 
 @router.get("/balance_evolution")
-async def get_balance_evolution():
+async def get_balance_evolution(user: dict = Depends(get_current_user)):
     """Retorna dados para evolução do saldo ao longo do tempo.
     Retorna [{data: 'YYYY-MM-DD', saldo: float}] ordenado por data.
     Filtra para mostrar apenas pontos significativos da evolução."""
-    if state.global_processed_df is None or state.global_processed_df.empty:
+    df = _user_df(user)
+    if df is None or df.empty:
         raise HTTPException(status_code=404, detail="Nenhum dado processado.")
 
-    df = state.global_processed_df.copy()
+    df = df.copy()
     if 'data' not in df.columns or 'saldo' not in df.columns:
         raise HTTPException(status_code=400, detail="Colunas 'data' ou 'saldo' ausentes após processamento.")
     
@@ -766,13 +790,14 @@ async def get_balance_evolution():
     return JSONResponse(content=result)
 
 @router.get("/balance_evolution_simple")
-async def get_balance_evolution_simple():
+async def get_balance_evolution_simple(user: dict = Depends(get_current_user)):
     """Retorna uma versão simplificada da evolução do saldo.
     Mostra apenas pontos-chave para uma visualização mais clara."""
-    if state.global_processed_df is None or state.global_processed_df.empty:
+    df = _user_df(user)
+    if df is None or df.empty:
         raise HTTPException(status_code=404, detail="Nenhum dado processado.")
 
-    df = state.global_processed_df.copy()
+    df = df.copy()
     if 'data' not in df.columns or 'saldo' not in df.columns:
         raise HTTPException(status_code=400, detail="Colunas 'data' ou 'saldo' ausentes após processamento.")
     
@@ -816,13 +841,13 @@ async def get_balance_evolution_simple():
     return JSONResponse(content=result)
 
 @router.get("/monthly_summary")
-async def get_monthly_summary(limit: int | None = None):
+async def get_monthly_summary(limit: int | None = None, user: dict = Depends(get_current_user)):
     """Resumo mensal de entradas e saídas direto do backend.
     Retorna [{ano_mes: 'YYYY-MM', entrada: float, saida: float, qtd_entradas_pos: int, qtd_saidas_pos: int}]."""
-    if state.global_processed_df is None or state.global_processed_df.empty:
+    df = _user_df(user)
+    if df is None or df.empty:
         raise HTTPException(status_code=404, detail="Nenhum dado processado.")
 
-    df = state.global_processed_df
     tmp = df.copy()
     if 'data' not in tmp.columns:
         raise HTTPException(status_code=400, detail="Coluna 'data' ausente após processamento.")
@@ -842,14 +867,15 @@ async def get_monthly_summary(limit: int | None = None):
 
 
 @router.get("/monthly_outflows_matrix")
-async def get_monthly_outflows_matrix(limit: int | None = None):
+async def get_monthly_outflows_matrix(limit: int | None = None, user: dict = Depends(get_current_user)):
     """Retorna uma matriz com ["YYYY-MM", total_saidas] por mês.
     Ex.: [["2024-01", 1234.56], ["2024-02", 987.65], ...]
     """
-    if state.global_processed_df is None or state.global_processed_df.empty:
+    df = _user_df(user)
+    if df is None or df.empty:
         raise HTTPException(status_code=404, detail="Nenhum dado processado.")
 
-    df = state.global_processed_df.copy()
+    df = df.copy()
     if 'data' not in df.columns:
         raise HTTPException(status_code=400, detail="Coluna 'data' ausente após processamento.")
 
@@ -867,13 +893,14 @@ async def get_monthly_outflows_matrix(limit: int | None = None):
     return JSONResponse(content=matrix)
 
 @router.get("/yearly_monthly_data")
-async def get_yearly_monthly_data():
+async def get_yearly_monthly_data(user: dict = Depends(get_current_user)):
     """Retorna dados mensais agrupados por ano para a visão anual.
     Retorna [{ano: int, mes: int, mes_ano: str, total_entradas: float, total_saidas: float, fluxo_liquido: float, saldo_final_mes: float}]."""
-    if state.global_processed_df is None or state.global_processed_df.empty:
+    df = _user_df(user)
+    if df is None or df.empty:
         raise HTTPException(status_code=404, detail="Nenhum dado processado.")
 
-    df = state.global_processed_df.copy()
+    df = df.copy()
     if 'data' not in df.columns:
         raise HTTPException(status_code=400, detail="Coluna 'data' ausente após processamento.")
     
