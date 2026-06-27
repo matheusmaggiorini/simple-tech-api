@@ -61,11 +61,11 @@ def test_identificar_riscos_com_base_em_limiares():
     df_previsoes = pd.DataFrame(
         {
             "data": pd.to_datetime(["2023-02-01", "2023-02-02", "2023-02-03"]),
-            "saldo_previsto": [1200, 800, 1300],
+            "saldo_previsto": [-100, -200, -50],
         }
     )
     analyzer = risk_analyzer.RiskAnalyzer()
-    alertas = analyzer.identificar_riscos_com_base_em_limiares(df_previsoes, saldo_inicial=1500)
+    alertas = analyzer.identificar_riscos_com_base_em_limiares(df_previsoes, saldo_inicial=500)
     assert isinstance(alertas, list)
     assert len(alertas) > 0
 

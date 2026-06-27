@@ -1,4 +1,4 @@
-from fastapi import APIRouter, UploadFile, File, HTTPException, Form
+from fastapi import APIRouter, UploadFile, File, HTTPException, Form, Depends
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 import pandas as pd
@@ -12,6 +12,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../.
 
 from api.endpoints import state
 from core.data_processing import processar_dados
+from api.core.deps import get_current_user
 
 # Criar diretório para uploads se não existir
 if not os.path.exists(state.UPLOAD_DIR):
@@ -21,9 +22,10 @@ router = APIRouter()
 
 
 @router.get("/status")
-async def data_status():
+async def data_status(user: dict = Depends(get_current_user)):
     """Check whether the current user has uploaded financial data."""
-    df = state.global_processed_df
+    session = state.get_user_session(user["id"])
+    df = session.processed_df
     has_data = df is not None and not df.empty
     return {
         "has_data": has_data,
