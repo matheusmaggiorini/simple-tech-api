@@ -98,6 +98,22 @@ def clear_session(user_id: int) -> None:
         shutil.rmtree(base)
 
 
+def set_user_processed_df(user_id: int, df: Optional[pd.DataFrame]) -> None:
+    session = get_user_session(user_id)
+    session.processed_df = df
+    persist_session(user_id)
+
+
+def set_user_historical_stats(user_id: int, stats: Optional[Dict[str, Any]]) -> None:
+    session = get_user_session(user_id)
+    session.historical_stats = stats
+    persist_session(user_id)
+
+
+def get_user_processed_df(user_id: int) -> Optional[pd.DataFrame]:
+    return get_user_session(user_id).processed_df
+
+
 def _active_session() -> UserSession:
     return get_user_session(_require_user_id())
 

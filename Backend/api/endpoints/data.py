@@ -470,7 +470,12 @@ def _read_any_cashflow_table(upload: UploadFile, treat_outflow_layout: bool = Fa
 
 # --- ENDPOINT TOLERANTE PARA UPLOAD DE ARQUIVOS ---
 @router.post("/upload_excel_bundle", response_model=FileUploadResponse)
-async def upload_excel_bundle(file: UploadFile | None = File(None), files: list[UploadFile] | None = File(None), has_outflow: bool = Form(False)):
+async def upload_excel_bundle(
+    file: UploadFile | None = File(None),
+    files: list[UploadFile] | None = File(None),
+    has_outflow: bool = Form(False),
+    user: dict = Depends(get_current_user),
+):
     """
     Aceita:
     - Um único arquivo (campo 'file') OU múltiplos (campo 'files').
@@ -493,8 +498,8 @@ async def upload_excel_bundle(file: UploadFile | None = File(None), files: list[
         for up in uploads:
             print(f"Processando arquivo recebido: {up.filename}")
             try:
-                # Verifica se o arquivo não está vazio
-                if up.size == 0:
+                # Starlette TestClient may leave size unset; empty files fail later on read.
+                if getattr(up, "size", None) == 0:
                     print(f"[WARNING] Arquivo {up.filename} está vazio - pulando")
                     continue
                 
@@ -632,10 +637,11 @@ async def upload_excel_bundle(file: UploadFile | None = File(None), files: list[
             except Exception as _:
                 pass
                 
-            state.global_processed_df = df_processed
-            state.global_historical_stats = calcular_estatisticas_historicas(df_processed)
-            state.global_prediction_model = None
-            state.global_feature_importance = None
+            state.set_user_processed_df(user["id"], df_processed)
+            state.set_user_historical_stats(user["id"], calcular_estatisticas_historicas(df_processed))
+            session = state.get_user_session(user["id"])
+            session.prediction_model = None
+            session.feature_importance = None
             print("Dados de fluxo de caixa processados e salvos no estado.")
             return FileUploadResponse(message="Arquivo(s) processado(s) com sucesso!")
             
