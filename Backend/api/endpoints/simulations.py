@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel, field_validator, model_validator
 import pandas as pd
 import numpy as np
@@ -17,6 +17,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../.
 
 # Importar o estado compartilhado e os simuladores de cenários
 from api.endpoints import state
+from api.core.deps import get_current_user
 # Importa AMBAS as funções de simulação do módulo atualizado
 from core.scenario_simulator import run_simulation, run_event_simulation, run_loan_simulation
 from core.loan_analyzer import suggest_loan_options
@@ -254,15 +255,21 @@ def create_mock_historical_data(days: int = 180) -> pd.DataFrame:
     return df
 # --- Novos Endpoints de Empréstimo ---
 
-@router.get("/loan-suggestions")
-async def get_loan_suggestions():
-    try:
-        # Usa dados reais se existirem; caso contrário, usa dados mock
-        if state.global_processed_df is None or state.global_processed_df.empty:
-            historical_df = create_mock_historical_data(180)
-        else:
-            historical_df = state.global_processed_df.copy()
+def _user_df(user: dict) -> pd.DataFrame | None:
+    return state.get_user_session(user["id"]).processed_df
 
+
+def _historical_df(user: dict) -> pd.DataFrame:
+    df = _user_df(user)
+    if df is None or df.empty:
+        return create_mock_historical_data(180)
+    return df.copy()
+
+
+@router.get("/loan-suggestions")
+async def get_loan_suggestions(user: dict = Depends(get_current_user)):
+    try:
+        historical_df = _historical_df(user)
         suggestions = suggest_loan_options(historical_df)
         return suggestions
     except Exception as e:
@@ -610,7 +617,7 @@ def load_key_business_events_from_excel():
 # --- Endpoints da API ---
 
 @router.get("/key-business-events")
-async def get_key_business_events():
+async def get_key_business_events(user: dict = Depends(get_current_user)):
     """
     Endpoint: Retorna a lista de principais produtos (receitas) e custos para
     popular a interface de simulação de eventos.
@@ -628,10 +635,11 @@ async def get_key_business_events():
         else:
             logger.warning("=== FALHA AO CARREGAR DADOS REAIS ===")
         
-        # Se não conseguiu carregar das planilhas, tenta dados processados do estado global
-        if state.global_processed_df is not None and not state.global_processed_df.empty:
-            logger.info("Usando dados processados do estado global")
-            events = identify_key_business_events(state.global_processed_df, top_n=5)
+        # Se não conseguiu carregar das planilhas, tenta dados processados do usuário
+        user_df = _user_df(user)
+        if user_df is not None and not user_df.empty:
+            logger.info("Usando dados processados da sessão do usuário")
+            events = identify_key_business_events(user_df, top_n=5)
             return events
         else:
             logger.warning("Nenhum dado real disponível, usando dados mock")
@@ -645,7 +653,7 @@ async def get_key_business_events():
         raise HTTPException(status_code=500, detail=f"Erro ao analisar eventos de negócio: {str(e)}")
 
 @router.post("/scenario-simulation", response_model=SimulationResponse)
-async def simulate_scenario(request: SimulationRequest):
+async def simulate_scenario(request: SimulationRequest, user: dict = Depends(get_current_user)):
     """
     Endpoint PRINCIPAL: Executa uma simulação com base no tipo especificado
     ('macroeconomic' ou 'event').
@@ -685,11 +693,7 @@ async def simulate_scenario(request: SimulationRequest):
             logger.info("🔄 Iniciando simulação de EVENTOS DE NEGÓCIO")
             
             # Verifica se há dados históricos, se não houver, cria dados mock
-            if state.global_processed_df is None or state.global_processed_df.empty:
-                logger.warning("⚠️  Nenhum dado histórico encontrado, usando dados mock para demonstração")
-                historical_df = create_mock_historical_data(180)
-            else:
-                historical_df = state.global_processed_df.copy()
+            historical_df = _historical_df(user)
                 
             # Valida os dados históricos
             validate_historical_data_for_events(historical_df)
@@ -744,11 +748,7 @@ async def simulate_scenario(request: SimulationRequest):
             if not hasattr(request, 'loan_params') or request.loan_params is None:
                 raise HTTPException(status_code=400, detail="Parâmetros do empréstimo não fornecidos.")
 
-            # Seleciona dados históricos reais ou mock
-            if state.global_processed_df is None or state.global_processed_df.empty:
-                historical_df = create_mock_historical_data(180)
-            else:
-                historical_df = state.global_processed_df.copy()
+            historical_df = _historical_df(user)
 
             df_simulated_monthly = run_loan_simulation(
                 historical_df=historical_df,
@@ -818,22 +818,23 @@ async def simulate_scenario(request: SimulationRequest):
         raise HTTPException(status_code=500, detail=f"Erro interno ao executar simulação: {str(e)}")
 
 @router.get("/data-availability")
-async def check_data_availability():
+async def check_data_availability(user: dict = Depends(get_current_user)):
     """
     Endpoint para verificar se há dados históricos carregados.
     """
     try:
-        has_real_data = state.global_processed_df is not None and not state.global_processed_df.empty
+        df = _user_df(user)
+        has_real_data = df is not None and not df.empty
         
         if has_real_data:
             data_info = {
                 "has_real_data": True,
                 "data_source": "uploaded_file",
-                "shape": state.global_processed_df.shape,
-                "columns": list(state.global_processed_df.columns),
+                "shape": df.shape,
+                "columns": list(df.columns),
                 "date_range": {
-                    "start": str(state.global_processed_df['data'].min()) if 'data' in state.global_processed_df.columns else None,
-                    "end": str(state.global_processed_df['data'].max()) if 'data' in state.global_processed_df.columns else None
+                    "start": str(df['data'].min()) if 'data' in df.columns else None,
+                    "end": str(df['data'].max()) if 'data' in df.columns else None
                 }
             }
         else:
@@ -853,10 +854,11 @@ async def check_data_availability():
         }
 
 @router.get("/status")
-async def get_simulation_status():
+async def get_simulation_status(user: dict = Depends(get_current_user)):
     """Endpoint para verificar o status do módulo de simulação."""
     try:
-        has_data = state.global_processed_df is not None and not state.global_processed_df.empty
+        df = _user_df(user)
+        has_data = df is not None and not df.empty
         
         status_info = {
             "module": "simulations",
@@ -867,8 +869,8 @@ async def get_simulation_status():
         }
         
         if has_data:
-            status_info["data_shape"] = state.global_processed_df.shape
-            status_info["data_columns"] = list(state.global_processed_df.columns)
+            status_info["data_shape"] = df.shape
+            status_info["data_columns"] = list(df.columns)
         
         return status_info
         
@@ -890,7 +892,10 @@ class MonteCarloRequest(BaseModel):
     saldo_inicial_simulacao: Optional[float] = None
 
 @router.post("/scenarios")
-async def execute_monte_carlo_simulation(request: MonteCarloRequest):
+async def execute_monte_carlo_simulation(
+    request: MonteCarloRequest,
+    user: dict = Depends(get_current_user),
+):
     """
     Endpoint para executar simulação Monte Carlo com 3 cenários (pessimista, mais provável, otimista).
     Retorna os percentis 25, 50 e 75 conforme solicitado.
@@ -898,8 +903,8 @@ async def execute_monte_carlo_simulation(request: MonteCarloRequest):
     try:
         from core.mock import ScenarioSimulatorMock
         
-        # Verifica se há dados carregados
-        if state.global_processed_df is None or state.global_processed_df.empty:
+        df = _user_df(user)
+        if df is None or df.empty:
             logger.warning("Nenhum dado histórico, usando valores padrão para simulação")
             stats = {
                 'entrada_media': 1000,
@@ -910,8 +915,7 @@ async def execute_monte_carlo_simulation(request: MonteCarloRequest):
                 'periodo_dias': 30
             }
         else:
-            # Calcula estatísticas dos dados reais
-            stats = ScenarioSimulatorMock.calcular_estatisticas_historicas(state.global_processed_df)
+            stats = ScenarioSimulatorMock.calcular_estatisticas_historicas(df)
         
         # Gera parâmetros da simulação
         params = ScenarioSimulatorMock.gerar_parametros_simulacao(
