@@ -1,95 +1,123 @@
-# Simple Tech
+# Simple Tech — Backend API
 
-Cloud-based financial management platform for small businesses. Upload cash flow data, get ML-powered forecasts, run Monte Carlo scenario simulations, and generate AI reports.
+[![Live API](https://img.shields.io/badge/API-live-success?style=flat-square)](https://simple-tech-api.onrender.com/health)
+[![Frontend](https://img.shields.io/badge/demo-GitHub%20Pages-blue?style=flat-square)](https://matheusmaggiorini.github.io/simple-tech-app/)
 
-Built by the Simple Tech team.
+FastAPI backend for **Simple Tech**: JWT auth, per-user financial data storage, ML cash-flow forecasting, Monte Carlo simulations, and executive report generation.
 
-## Stack
+**API base:** https://simple-tech-api.onrender.com  
+**Interactive docs:** https://simple-tech-api.onrender.com/docs  
+**Frontend:** https://github.com/matheusmaggiorini/simple-tech-app
 
-| Layer | Technology |
-|-------|------------|
-| Frontend | React 18, TypeScript, Vite, shadcn/ui, Tailwind, Recharts |
-| Backend | FastAPI, scikit-learn, XGBoost, Gemini API |
-| Auth | JWT + bcrypt |
-| Storage | SQLite (users) + Parquet per user (financial data) |
+---
 
-## Repositories
+## Architecture
 
-- **Frontend:** `simple-tech` (this repo)
-- **Backend:** `Simple.Tech` → `Backend/` folder
+```
+Client (React / GitHub Pages)
+        │  Bearer JWT
+        ▼
+FastAPI (Render)
+        ├── SQLite        → users
+        ├── Parquet       → processed cash-flow per user
+        ├── scikit-learn / XGBoost → forecasts
+        └── Monte Carlo   → scenario simulation
+```
+
+---
+
+## Features
+
+| Area | Endpoints | Description |
+|------|-----------|-------------|
+| **Auth** | `/api/auth/register`, `/login`, `/me` | JWT + bcrypt |
+| **Data** | `/api/data/upload_excel_bundle`, `/statistics`, `/view_processed` | CSV/XLSX upload, KPIs |
+| **Charts** | `/api/data/balance_evolution_simple`, `/monthly_summary`, `/yearly_monthly_data` | Dashboard series |
+| **Forecast** | `POST /api/predictions/cashflow` | Train & predict N days |
+| **Simulation** | `/api/simulations/scenarios`, `/scenario-simulation` | Monte Carlo, events, loans |
+| **Reports** | `POST /api/reports/generate` | Markdown reports (heuristic or Gemini) |
+
+All data routes require `Authorization: Bearer <token>`.
+
+---
 
 ## Quick start (local)
 
-### 1. Backend
-
 ```powershell
-cd Backend
+git clone https://github.com/matheusmaggiorini/simple-tech-api.git
+cd simple-tech-api/Backend
 python -m venv .venv
 .venv\Scripts\activate
 pip install -r requirements.txt
 copy .env.example .env
-python -m uvicorn api.main:app --reload --host 0.0.0.0 --port 8000
+powershell -ExecutionPolicy Bypass -File run-api.ps1
 ```
 
-API docs: http://localhost:8000/docs
+API: http://localhost:8000  
+Docs: http://localhost:8000/docs
 
-### 2. Frontend
+### Environment (`Backend/.env`)
 
-```powershell
-cd simple-tech
-npm install
-copy .env.example .env
-npm run dev
-```
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `JWT_SECRET_KEY` | Yes (prod) | Token signing secret |
+| `CORS_ORIGINS` | Yes (prod) | e.g. `https://matheusmaggiorini.github.io` |
+| `GEMINI_API_KEY` | No | Enables AI-enhanced reports |
 
-App: http://localhost:8080
+---
 
-### 3. First use
+## Deploy (Render — free tier)
 
-1. Open http://localhost:8080
-2. Create an account (`/auth`)
-3. Upload Excel/CSV files (inflow and/or outflow)
-4. Explore dashboard, forecasts, and simulations
+| Setting | Value |
+|---------|--------|
+| Root Directory | `Backend` |
+| Build Command | `pip install -r requirements.txt` |
+| Start Command | `uvicorn api.main:app --host 0.0.0.0 --port $PORT` |
 
-## Environment variables
+Set `JWT_SECRET_KEY` and `CORS_ORIGINS` in Render environment variables.
 
-### Backend (`Backend/.env`)
+**Limitations (free tier):** ephemeral filesystem — SQLite and Parquet may reset on redeploy or long spin-down. Mention this in demos.
 
-| Variable | Description |
-|----------|-------------|
-| `JWT_SECRET_KEY` | Secret for signing tokens (change in production) |
-| `GEMINI_API_KEY` | Optional — enables AI-generated reports |
-| `CORS_ORIGINS` | Comma-separated frontend URLs |
-
-### Frontend (`.env`)
-
-| Variable | Description |
-|----------|-------------|
-| `VITE_API_BASE_URL` | Backend URL (default: `http://localhost:8000`) |
-
-## Features
-
-- **Upload** — Excel/CSV with Brazilian currency formats
-- **Dashboard** — KPIs, balance evolution, monthly summary
-- **Forecast** — ML cash flow prediction (XGBoost)
-- **Simulation** — Monte Carlo scenarios, business events, loan impact
-- **Reports** — Markdown reports (Gemini when configured)
+---
 
 ## CSV format
 
 ```csv
-data,descricao,entrada,saida
-2024-01-01,Product sale,1000.00,0.00
-2024-01-02,Supplier payment,0.00,500.00
+data,descricao,entrada,saida,id_cliente
+2025-01-09,Product sale,1000.00,0.00,C01
+2025-01-02,Supplier,0.00,500.00,S01
 ```
 
-## Deploy (free tier)
+Filenames containing `fluxo_caixa` or `fluxo` are treated as combined inflow/outflow files.
 
-- **Backend:** Render — set start command: `uvicorn api.main:app --host 0.0.0.0 --port $PORT`
-- **Frontend:** Vercel — set `VITE_API_BASE_URL` to your Render URL
+---
 
-Cold starts on free tier are expected; mention this in demos.
+## Tests
+
+```powershell
+cd Backend
+pytest
+```
+
+CI runs on push to `main` (GitHub Actions).
+
+---
+
+## Stack
+
+Python 3.11+ · FastAPI · pandas · scikit-learn · XGBoost · SQLite · Parquet · JWT · bcrypt · Docker
+
+Optional: Google Gemini API for rich AI reports.
+
+---
+
+## Team & role
+
+**Simple Tech** — group project.  
+**Matheus Maggiorini** — CTO: backend architecture, auth, ML endpoints, Render deployment, CI.
+
+---
 
 ## License
 
-Private team project. Contact the Simple Tech team for usage rights.
+Team project. Contact the Simple Tech team for usage rights.
